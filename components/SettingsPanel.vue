@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount } from "vue";
 import { store, type SpoilState } from "../src/services/state";
 import { clearCache, testApi, type ApiTestResult } from "../src/services/classify";
+import { normalizeRequestTimeoutSeconds } from "../src/services/api-config";
 
 const state = ref<SpoilState>({ ...store.get() });
 let unsub: (() => void) | null = null;
@@ -10,6 +11,8 @@ let unsub: (() => void) | null = null;
 const urlInput = ref(state.value.apiUrl);
 const modelInput = ref(state.value.apiModel);
 const keyInput = ref(state.value.apiKey);
+const extraRequestParamsInput = ref(state.value.extraRequestParams);
+const requestTimeoutSecondsInput = ref(state.value.requestTimeoutSeconds);
 // 功能板块
 const batchSizeInput = ref(state.value.batchSize);
 const concurrencyInput = ref(state.value.concurrency);
@@ -17,7 +20,7 @@ const replaceTextInput = ref(state.value.replaceText);
 const cacheVideoCountInput = ref(state.value.cacheVideoCount);
 
 // 功能板块默认值
-const DEFAULT_BATCH = 30;
+const DEFAULT_BATCH = 100;
 const DEFAULT_CONCURRENCY = 500;
 const DEFAULT_REPLACE_TEXT = "<已屏蔽>";
 const DEFAULT_CACHE_COUNT = 3;
@@ -28,6 +31,8 @@ onMounted(() => {
     urlInput.value = s.apiUrl;
     modelInput.value = s.apiModel;
     keyInput.value = s.apiKey;
+    extraRequestParamsInput.value = s.extraRequestParams;
+    requestTimeoutSecondsInput.value = s.requestTimeoutSeconds;
     batchSizeInput.value = s.batchSize;
     concurrencyInput.value = s.concurrency;
     replaceTextInput.value = s.replaceText;
@@ -44,6 +49,8 @@ function persist() {
     apiUrl: urlInput.value.trim(),
     apiModel: modelInput.value.trim(),
     apiKey: keyInput.value.trim(),
+    extraRequestParams: extraRequestParamsInput.value.trim(),
+    requestTimeoutSeconds: normalizeRequestTimeoutSeconds(requestTimeoutSecondsInput.value),
     batchSize: Math.max(1, Math.floor(Number(batchSizeInput.value) || DEFAULT_BATCH)),
     concurrency: Math.max(1, Math.floor(Number(concurrencyInput.value) || DEFAULT_CONCURRENCY)),
     replaceText: replaceTextInput.value.trim(),
@@ -113,6 +120,8 @@ async function handleTestApi() {
     url: urlInput.value.trim(),
     model: modelInput.value.trim(),
     apiKey: keyInput.value.trim(),
+    extraRequestParams: extraRequestParamsInput.value.trim(),
+    requestTimeoutSeconds: normalizeRequestTimeoutSeconds(requestTimeoutSecondsInput.value),
   };
   try {
     const r: ApiTestResult = await testApi(cfg);
@@ -142,6 +151,24 @@ async function handleTestApi() {
       <input v-model="modelInput" type="text" class="key-input" placeholder="" @change="onApiChange" />
       <label class="setting-label">API Key</label>
       <input v-model="keyInput" type="password" class="key-input" placeholder="sk-..." @change="onApiChange" />
+      <label class="setting-label">自定义额外参数（JSON）</label>
+      <textarea
+        v-model="extraRequestParamsInput"
+        class="key-input extra-params-input"
+        spellcheck="false"
+        @change="onApiChange"
+      ></textarea>
+      <div class="setting-row api-timeout-row">
+        <label class="setting-label">请求超时时间（秒）</label>
+        <input
+          v-model.number="requestTimeoutSecondsInput"
+          type="number"
+          class="small-input"
+          min="1"
+          step="1"
+          @change="onApiChange"
+        />
+      </div>
       <span class="api-test-row">
         <button class="btn api-test-btn" :disabled="testState === 'testing'" @click="handleTestApi">测试</button>
         <span v-if="testState === 'testing'" class="api-test-status testing">
@@ -301,6 +328,12 @@ async function handleTestApi() {
   margin-bottom: 12px;
 }
 .key-input:focus { outline: none; border-color: #1a1a1a; }
+.extra-params-input {
+  min-height: 58px;
+  resize: vertical;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  line-height: 1.45;
+}
 .setting-row {
   display: flex;
   align-items: center;
@@ -308,6 +341,7 @@ async function handleTestApi() {
   gap: 8px;
   margin-bottom: 10px;
 }
+.setting-row.api-timeout-row { margin-bottom: 12px; }
 .setting-row .setting-label { flex: 1; min-width: 0; }
 .small-input {
   width: 70px;

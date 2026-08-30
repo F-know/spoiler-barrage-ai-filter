@@ -2,6 +2,10 @@
 // 这个单例对象驱动 UI 和拦截逻辑,并提供跨模块的响应式状态。
 
 import { segUrl, fetchViewDanmakuCount, formatCount } from "./bilibili";
+import {
+  DEFAULT_EXTRA_REQUEST_PARAMS,
+  DEFAULT_REQUEST_TIMEOUT_SECONDS,
+} from "./api-config";
 
 /** chrome.storage.local 中存储 OpenAI 兼容接口配置的键。 */
 const API_CFG_KEY = "dmApiConfig_v1";
@@ -13,6 +17,8 @@ type PersistedConfig = {
   apiUrl?: string;
   apiModel?: string;
   apiKey?: string;
+  extraRequestParams?: string;
+  requestTimeoutSeconds?: number;
   batchSize?: number;
   concurrency?: number;
   replaceText?: string;
@@ -57,7 +63,11 @@ export type SpoilState = {
   apiModel: string;
   /** API Key */
   apiKey: string;
-  /** 单次请求处理的弹幕数量(默认 30) */
+  /** 合并进 chat/completions 请求体的自定义 JSON 对象。 */
+  extraRequestParams: string;
+  /** 正式分析与接口测试共用的单次请求超时时间（秒）。 */
+  requestTimeoutSeconds: number;
+  /** 单次请求处理的弹幕数量(默认 100) */
   batchSize: number;
   /** 请求并发数(默认 500) */
   concurrency: number;
@@ -95,7 +105,9 @@ function defaultState(): SpoilState {
     apiUrl: "",
     apiModel: "",
     apiKey: "",
-    batchSize: 30,
+    extraRequestParams: DEFAULT_EXTRA_REQUEST_PARAMS,
+    requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    batchSize: 100,
     concurrency: 500,
     replaceText: "<已屏蔽>",
     cacheVideoCount: 3,
@@ -155,6 +167,8 @@ class StateStore {
       apiUrl: this.state.apiUrl,
       apiModel: this.state.apiModel,
       apiKey: this.state.apiKey,
+      extraRequestParams: this.state.extraRequestParams,
+      requestTimeoutSeconds: this.state.requestTimeoutSeconds,
       batchSize: this.state.batchSize,
       concurrency: this.state.concurrency,
       replaceText: this.state.replaceText,
@@ -177,6 +191,8 @@ class StateStore {
       apiUrl: this.state.apiUrl,
       apiModel: this.state.apiModel,
       apiKey: this.state.apiKey,
+      extraRequestParams: this.state.extraRequestParams,
+      requestTimeoutSeconds: this.state.requestTimeoutSeconds,
       batchSize: this.state.batchSize,
       concurrency: this.state.concurrency,
       replaceText: this.state.replaceText,
@@ -199,6 +215,8 @@ class StateStore {
     apiUrl: string;
     apiModel: string;
     apiKey: string;
+    extraRequestParams: string;
+    requestTimeoutSeconds: number;
     batchSize: number;
     concurrency: number;
     replaceText: string;
@@ -209,6 +227,8 @@ class StateStore {
         apiUrl: cfg.apiUrl,
         apiModel: cfg.apiModel,
         apiKey: cfg.apiKey,
+        extraRequestParams: cfg.extraRequestParams,
+        requestTimeoutSeconds: cfg.requestTimeoutSeconds,
         batchSize: cfg.batchSize,
         concurrency: cfg.concurrency,
         replaceText: cfg.replaceText,
@@ -239,6 +259,8 @@ class StateStore {
     apiUrl: string;
     apiModel: string;
     apiKey: string;
+    extraRequestParams: string;
+    requestTimeoutSeconds: number;
     batchSize: number;
     concurrency: number;
     replaceText: string;
@@ -252,7 +274,10 @@ class StateStore {
           apiUrl: v.apiUrl ?? "",
           apiModel: v.apiModel ?? "",
           apiKey: v.apiKey ?? "",
-          batchSize: v.batchSize ?? 30,
+          extraRequestParams: v.extraRequestParams ?? DEFAULT_EXTRA_REQUEST_PARAMS,
+          requestTimeoutSeconds: v.requestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
+          // 将旧版本的默认值 30 平滑迁移到新默认值；其他自定义值保持不变。
+          batchSize: v.batchSize == null || v.batchSize === 30 ? 100 : v.batchSize,
           concurrency: v.concurrency ?? 500,
           replaceText: v.replaceText ?? "<已屏蔽>",
           cacheVideoCount: v.cacheVideoCount ?? 3,

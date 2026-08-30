@@ -7,6 +7,12 @@ import {
   readVideoAnalysisCache,
   writeVideoAnalysisCache,
 } from "../extension/analysis-cache";
+import {
+  DEFAULT_EXTRA_REQUEST_PARAMS,
+  DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  normalizeRequestTimeoutSeconds,
+  parseExtraRequestParams,
+} from "./api-config";
 
 export type ClassifiedDm = {
   text: string;
@@ -98,6 +104,10 @@ export type OpenAIConfig = {
   model: string;
   /** API Key */
   apiKey: string;
+  /** 合并进请求体的自定义 JSON 对象文本。 */
+  extraRequestParams?: string;
+  /** 正式分析与接口测试共用的单次请求超时时间（秒）。 */
+  requestTimeoutSeconds?: number;
 };
 
 /**
@@ -120,7 +130,7 @@ export async function classifyTexts(
     onCache?: (hit: number) => void;
     /** 每完成一批回调一次,报告已处理条数/总条数以及本批分类结果 */
     onProgress?: (done: number, total: number, batchItems?: ClassifiedDm[]) => void;
-    /** 单次请求处理的弹幕条数(默认 30) */
+    /** 单次请求处理的弹幕条数(默认 100) */
     batchSize?: number;
     /** 请求并发数(默认 500) */
     concurrency?: number;
@@ -197,10 +207,13 @@ export async function classifyTexts(
     return { items, fromCache: cacheHit > 0 };
   }
 
+  // 在创建并发批次前先校验，避免无效配置触发多条重复失败的请求。
+  parseExtraRequestParams(config.extraRequestParams ?? DEFAULT_EXTRA_REQUEST_PARAMS);
+
   // 2. 分批调用(每批上限,避免一次塞太多)
   // 单次请求最多分析 BATCH 条弹幕,防止模型输出超过 token 上限被截断。
   // 并发拉到 CONCURRENCY,超出账户级并发上限会返回 HTTP 429。
-  const BATCH = Math.max(1, Math.floor(opts.batchSize || 30));
+  const BATCH = Math.max(1, Math.floor(opts.batchSize || 100));
   const CONCURRENCY = Math.max(1, Math.floor(opts.concurrency || 500));
   const newItems: ClassifiedDm[] = [];
   let doneCount = preDone;
@@ -273,6 +286,9 @@ async function callChatModel(
   const userContent = `视频标题:${opts?.title?.trim() || "未知"}
 以下是该视频按出现时间排序的全部弹幕(未去重):
 ${lines.join("\n")}`;
+  const extraRequestParams = parseExtraRequestParams(
+    config.extraRequestParams ?? DEFAULT_EXTRA_REQUEST_PARAMS,
+  );
   const body = {
     model: config.model,
     messages: [
@@ -281,10 +297,7 @@ ${lines.join("\n")}`;
     ],
     response_format: { type: "json_object" },
     temperature: 0.1,
-    // 显式声明输出上限(通用模型单次输出上限通常较高)。
-    // 若不声明,某些批(文本较多/较长)输出仍可能被服务端截断(finish_reason="length"),
-    // 导致返回的 JSON 不完整 -> "不是合法 JSON"。
-    max_tokens: 8192,
+    ...extraRequestParams,
   };
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -301,9 +314,13 @@ ${lines.join("\n")}`;
 
   let txt: string;
   let status = 0;
-  // 每次请求单独超时(默认 30s),避免单次卡死拖住整批流程
+  const timeoutSeconds = normalizeRequestTimeoutSeconds(
+    config.requestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  );
+  const timeoutMs = timeoutSeconds * 1000;
+  // 给可能启用思考模式的模型留出足够时间，同时避免单次请求永久挂起。
   const perCall = new AbortController();
-  const perTimer = LFRuntime.timeout(() => perCall.abort(), 30000);
+  const perTimer = LFRuntime.timeout(() => perCall.abort(), timeoutMs);
   const mergeSignal = opts.signal ? AbortSignal.any([opts.signal, perCall.signal]) : perCall.signal;
   try {
     const res = await LFHttp.request(url, { ...params, signal: mergeSignal, throwOnHTTPError: false });
@@ -312,12 +329,18 @@ ${lines.join("\n")}`;
   } catch (e: any) {
     // 扩展后台请求不可用时回退原生 fetch。
     if (opts.signal?.aborted) throw e;
+    if (perCall.signal.aborted) {
+      throw new Error(`${modelLabel} 请求超时（超过 ${timeoutSeconds} 秒）`);
+    }
     try {
       const resp = await fetch(url, { ...params, signal: mergeSignal });
       status = resp.status;
       txt = await resp.text();
     } catch (e2: any) {
       if (opts.signal?.aborted) throw e2;
+      if (perCall.signal.aborted) {
+        throw new Error(`${modelLabel} 请求超时（超过 ${timeoutSeconds} 秒）`);
+      }
       throw new Error(`${modelLabel} 请求失败: ` + (e2?.message || String(e2)));
     }
   } finally {
@@ -479,17 +502,32 @@ export async function testApi(config: OpenAIConfig): Promise<ApiTestResult> {
     "Content-Type": "application/json",
     Authorization: `Bearer ${config.apiKey}`,
   };
+  let extraRequestParams: Record<string, unknown>;
+  try {
+    extraRequestParams = parseExtraRequestParams(
+      config.extraRequestParams ?? DEFAULT_EXTRA_REQUEST_PARAMS,
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      code: "InvalidExtraParams",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
   const body = {
     model: config.model,
     messages: [
       { role: "system", content: "你是测试助手。" },
       { role: "user", content: "你好，请回复OK" },
     ],
-    max_tokens: 8,
     temperature: 0,
+    ...extraRequestParams,
   };
+  const timeoutSeconds = normalizeRequestTimeoutSeconds(
+    config.requestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  );
   const perCall = new AbortController();
-  const perTimer = LFRuntime.timeout(() => perCall.abort(), 20000);
+  const perTimer = LFRuntime.timeout(() => perCall.abort(), timeoutSeconds * 1000);
   let txt = "";
   let status = 0;
   try {
@@ -514,7 +552,9 @@ export async function testApi(config: OpenAIConfig): Promise<ApiTestResult> {
       status = resp.status;
       txt = await resp.text();
     } catch (e2: any) {
-      if (perCall.signal.aborted) return { ok: false, code: "TimeOut", message: "请求超时" };
+      if (perCall.signal.aborted) {
+        return { ok: false, code: "TimeOut", message: `请求超时（超过 ${timeoutSeconds} 秒）` };
+      }
       const name = e2?.name || "NetworkError";
       return { ok: false, code: name, message: e2?.message || String(e2) };
     }

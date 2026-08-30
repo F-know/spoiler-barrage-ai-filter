@@ -142,6 +142,8 @@ export async function analyzeEpisode(
       url: s.apiUrl,
       model: s.apiModel,
       apiKey: s.apiKey,
+      extraRequestParams: s.extraRequestParams,
+      requestTimeoutSeconds: s.requestTimeoutSeconds,
     };
     const riskMap: Record<string, boolean> = {};
     const classifiedAcc: Record<string, { text: string; risk: boolean }> = {};
@@ -282,4 +284,3 @@ export function stop(): void {
 export async function reset(): Promise<void> {
   store.patch({ handledEp: null, phase: "idle", classified: {}, progress: 0, analyzedCount: 0, totalCount: 0 });
 }
-
