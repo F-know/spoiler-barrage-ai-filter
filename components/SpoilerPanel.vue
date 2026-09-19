@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
-import { store, type SpoilState, controlPlayback, seekTo, hidePanelHost } from "../src/services/state";
+import { computed, ref, shallowRef, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+import { store, type SpoilState, seekTo, hidePanelHost } from "../src/services/state";
 import { runOnce, reset, stop } from "../src/services/engine";
-import { restoreAllMasked, applyAllMasked } from "../src/services/interceptor";
+import { sortDanmaku, type DanmakuSort } from "../src/services/probability";
 import SettingsPanel from "./SettingsPanel.vue";
+import { detailWindow, shouldFollowLogs } from "../src/services/panel-view";
+import ProbabilityPanel from "./ProbabilityPanel.vue";
 
-const state = ref<SpoilState>({ ...store.get() });
+const state = shallowRef<SpoilState>({ ...store.get() });
 const currentView = ref<"main" | "settings" | "detail">("main");
 const shellRef = ref<HTMLElement | null>(null);
 const mainViewRef = ref<HTMLElement | null>(null);
@@ -22,8 +24,10 @@ const POS_KEY = "panelPos_v1";
 
 onMounted(async () => {
   unsub = store.subscribe((s) => {
+    const el = logBoxRef.value;
+    const followLogs = shouldFollowLogs(state.value.logs, s.logs, el);
     state.value = { ...s };
-    scrollLogToBottom();
+    if (followLogs) scrollLogToBottom();
     // 主视图内容高度会随异步视频信息(标题/封面)等变化，
     // 在 state 更新时重测，确保子视图 min-height 与最新主视图一致。
     if (currentView.value === "main") measureMainHeight();
@@ -122,33 +126,12 @@ function scrollLogToBottom() {
 
 const isBusy = computed(() => state.value.phase === "analyzing" || state.value.phase === "paused");
 const isDone = computed(() => state.value.phase === "done");
-/** 当前是否处于"拦截中"状态(决定完成态左按钮显示"恢复"还是"应用") */
-const isIntercepting = computed(() => state.value.interceptEnabled);
-/** OpenAI 兼容接口三项是否都已填(决定开始/重新过滤按钮是否可用) */
+function updateThreshold(value: number) { store.setThreshold(value); }
+function saveThreshold() { void store.saveApiConfig(store.get()); }
+/** 配置 Key 后可发起新分析。 */
 const isApiReady = computed(
-  () => !!state.value.apiUrl?.trim() && !!state.value.apiModel?.trim() && !!state.value.apiKey?.trim(),
+  () => !!state.value.apiKey?.trim(),
 );
-
-// 已过滤数字滚动动效:从 0 快速滚动到最终值
-const animatedCount = ref(0);
-let animRaf = 0;
-function startCountAnim(target: number) {
-  cancelAnimationFrame(animRaf);
-  const start = performance.now();
-  const dur = 700;
-  const step = (t: number) => {
-    const p = Math.min(1, (t - start) / dur);
-    // easeOutCubic
-    const eased = 1 - Math.pow(1 - p, 3);
-    animatedCount.value = Math.round(target * eased);
-    if (p < 1) {
-      animRaf = requestAnimationFrame(step);
-    } else {
-      animatedCount.value = target;
-    }
-  };
-  animRaf = requestAnimationFrame(step);
-}
 
 // 弹幕总数数字滚动动效:随"拉取/分析过程中 totalCount 实时增长"而往上加。
 // 从当前已显示的动画值(上一段累计值)续滚到新值,而不是每次从 0 重播,
@@ -174,57 +157,13 @@ function startTotalAnim(target: number) {
   totalRaf = requestAnimationFrame(step);
 }
 
-// 已过滤百分数滚动动效:完成时从 0 滚动到最终占比(x.x%)。
-const animatedPercent = ref(0);
-let percentRaf = 0;
-function startPercentAnim(target: number) {
-  cancelAnimationFrame(percentRaf);
-  const from = animatedPercent.value;
-  if (Math.abs(from - target) < 0.05) {
-    animatedPercent.value = target;
-    return;
+watch(() => state.value.phase, phase => {
+  if (phase === "done") startTotalAnim(state.value.totalCount);
+  else if (phase === "idle") {
+    cancelAnimationFrame(totalRaf);
+    animatedTotalCount.value = 0;
   }
-  const start = performance.now();
-  const dur = 700;
-  const step = (t: number) => {
-    const p = Math.min(1, (t - start) / dur);
-    const eased = 1 - Math.pow(1 - p, 3);
-    animatedPercent.value = from + (target - from) * eased;
-    if (p < 1) {
-      percentRaf = requestAnimationFrame(step);
-    } else {
-      animatedPercent.value = target;
-    }
-  };
-  percentRaf = requestAnimationFrame(step);
-}
-
-// 过滤完成时触发"已过滤"数字的滚动动效。
-// 只监听 phase 字符串原语(而非返回新对象),避免"恢复/应用"切换 interceptEnabled
-// 触发 store.patch 重建 state 时,因 getter 返回新对象引用而被误判为变化,重播数字动画。
-watch(
-  () => state.value.phase,
-  (phase) => {
-    if (phase === "done") {
-      startCountAnim(state.value.filteredDm?.length ?? 0);
-      startTotalAnim(state.value.totalCount ?? 0);
-      const total = state.value.totalCount || 0;
-      const filtered = state.value.filteredDm?.length || 0;
-      startPercentAnim(total > 0 ? (filtered / total) * 100 : 0);
-    } else if (phase === "idle" || phase === "error") {
-      // 回到空闲/出错:动画数字清零,等待下次处理。
-      cancelAnimationFrame(animRaf);
-      cancelAnimationFrame(totalRaf);
-      cancelAnimationFrame(percentRaf);
-      animatedCount.value = 0;
-      animatedTotalCount.value = 0;
-      animatedPercent.value = 0;
-    }
-    // analyzing / paused 阶段:总数数字的滚动由下面的 totalCount 监听负责,
-    // 不能在这里清零,否则会打断"拉取过程逐段往上加"的连贯滚动。
-  },
-  { immediate: true },
-);
+}, { immediate: true });
 
 // 弹幕总数随拉取过程实时累加:
 // engine 每拉到一段就把当前已累计的 totalCount 写进 store,这里监听它的变化,
@@ -238,18 +177,16 @@ watch(
   },
 );
 onBeforeUnmount(() => {
-  cancelAnimationFrame(animRaf);
   cancelAnimationFrame(totalRaf);
-  cancelAnimationFrame(percentRaf);
 });
 
 /** 已过滤占比:未完成时用横杠占位,完成后显示"已过滤条目数/弹幕总数"的百分数 */
 const filteredCount = computed(() => {
-  if (!isDone.value && state.value.phase !== "error") return "--";
+  if (!state.value.analysisItems.length) return "--";
   const total = state.value.totalCount || 0;
   const filtered = state.value.filteredDm?.length || 0;
   if (total <= 0) return "--";
-  return animatedPercent.value.toFixed(1) + "%";
+  return `${(filtered / total * 100).toFixed(1)}%`;
 });
 
 /** 弹幕总数:空闲/出错时为横杠;拉取、分析、完成阶段都显示数字,
@@ -269,27 +206,27 @@ function fmtTime(sec: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
 }
 
-/** 被过滤弹幕按出现时间升序排序(未标注时间的排最后) */
-const sortedFiltered = computed(() => {
-  const list = state.value.filteredDm || [];
-  return [...list].sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
+const detailSort = ref<DanmakuSort>("time-asc");
+const detailListRef = ref<HTMLElement | null>(null);
+// 大数组保持浅响应，仅在详情打开且数据或排序变化时排序。
+const detailItems = shallowRef(store.get().analysisItems);
+watch(() => state.value.analysisItems, items => { detailItems.value = items; });
+const sortedDanmaku = computed(() => currentView.value === "detail"
+  ? sortDanmaku(detailItems.value, detailSort.value) : []);
+const DETAIL_ROW_HEIGHT = 76;
+const detailScrollTop = ref(0);
+const detailViewportHeight = computed(() => Math.max(76, (detailBodyHeight.value ?? 438) - 40));
+const detailRange = computed(() => detailWindow(sortedDanmaku.value.length,
+  detailScrollTop.value, detailViewportHeight.value, DETAIL_ROW_HEIGHT));
+const detailStart = computed(() => detailRange.value.start);
+const detailEnd = computed(() => detailRange.value.end);
+const visibleDanmaku = computed(() => sortedDanmaku.value.slice(detailStart.value, detailEnd.value));
+watch([detailSort, currentView, detailItems], () => {
+  detailScrollTop.value = 0;
+  if (detailListRef.value) detailListRef.value.scrollTop = 0;
 });
-
-/** 懒加载:每次渲染的弹幕条数 */
-const DETAIL_PAGE = 1000;
-const detailVisibleCount = ref(DETAIL_PAGE);
-/** 详情视图目前可见的弹幕(分页截断) */
-const visibleFiltered = computed(() => sortedFiltered.value.slice(0, detailVisibleCount.value));
-/** 是否还有更多待加载 */
-const hasMoreDetail = computed(() => detailVisibleCount.value < sortedFiltered.value.length);
-
-/** 滚动到底部附近时,加载下一批 */
-function loadMoreDetail() {
-  if (!hasMoreDetail.value) return;
-  detailVisibleCount.value = Math.min(
-    detailVisibleCount.value + DETAIL_PAGE,
-    sortedFiltered.value.length,
-  );
+function onDetailScroll(event: Event) {
+  detailScrollTop.value = (event.target as HTMLElement).scrollTop;
 }
 
 /** 详情视图列表区高度:撑满 shell(与主视图同高),消除下方留白。
@@ -327,27 +264,13 @@ async function handleStart() {
 async function handleRestart() {
   await reset();
   store.patch({ logs: [] });
-  await runOnce(store.get().mode);
+  await runOnce(store.get().mode, true);
 }
 
 function handleStop() {
   stop();
 }
 
-async function handleResume() {
-  // 恢复/应用二态切换:仅切换拦截开关,保留已过滤数据与 done 状态,
-  // 不改变"重新过滤"按钮,也不清空已过滤列表。
-  const s = store.get();
-  if (s.interceptEnabled) {
-    // 当前拦截中 -> 点"恢复":取消拦截 + 把已出现的 <已屏蔽> 还原回原文。
-    restoreAllMasked();
-    store.patch({ interceptEnabled: false });
-  } else {
-    // 当前未拦截 -> 点"应用":恢复拦截 + 全量重新屏蔽页面上已还原的弹幕。
-    applyAllMasked();
-    store.patch({ interceptEnabled: true });
-  }
-}
 </script>
 
 <template>
@@ -399,54 +322,54 @@ async function handleResume() {
       <div class="sp-stat">
         <div class="sp-stat-label-wrap">
           <span class="sp-stat-label">弹幕总数</span>
-          <span class="sp-stat-info" data-tip="由于各种原因，有时跟页面显示的弹幕数量对不上是正常的"></span>
         </div>
         <span class="sp-stat-val">{{ totalCountDisplay }}</span>
       </div>
       <div class="sp-stat sp-stat-right">
         <div class="sp-stat-main">
-          <span class="sp-stat-label">已过滤</span>
+          <span class="sp-stat-label">已屏蔽</span>
           <span class="sp-stat-val">{{ filteredCount }}</span>
         </div>
-        <span v-if="isDone" class="sp-detail-link" @click="currentView = 'detail'">详情</span>
       </div>
     </div>
 
-    <!-- 主动作区(三态: 开始过滤 / 过滤中+停止 / 重新过滤+恢复) -->
+    <ProbabilityPanel :items="state.analysisItems" :threshold="state.hideThreshold" :enabled="state.interceptEnabled"
+      @threshold="updateThreshold" @save="saveThreshold" @detail="currentView = 'detail'" />
+
+    <!-- 主动作区(三态: 开始分析 / 分析中+停止 / 重新分析) -->
     <div class="spoiler-main">
-      <!-- 空闲态: 开始过滤 -->
+      <!-- 空闲态: 开始分析 -->
       <template v-if="!isBusy && !isDone">
         <span class="sp-btn-wrap" :class="{ 'sp-btn-disabled': !isApiReady }" :data-tip="!isApiReady ? '请先在设置中接入API' : ''">
           <button class="sp-btn sp-btn-dark sp-btn-big" :disabled="!isApiReady" @click="handleStart">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
             </svg>
-            <span>开始过滤</span>
+            <span>开始分析</span>
           </button>
         </span>
       </template>
 
-      <!-- 过滤中: 停止(左) + 过滤中(右,禁用) -->
+      <!-- 分析中: 停止(左) + 分析中(右,禁用) -->
       <template v-else-if="isBusy">
         <div class="sp-btn-row">
           <button class="sp-btn sp-btn-red sp-btn-mid" @click="handleStop">停止</button>
           <button class="sp-btn sp-btn-dark sp-btn-big" disabled>
             <span class="sp-spinner"></span>
-            <span>过滤中</span>
+            <span>分析中</span>
           </button>
         </div>
       </template>
 
-      <!-- 完成态: 恢复(左) + 重新过滤(右) -->
+      <!-- 完成态：重新分析占满动作区 -->
       <template v-else-if="isDone">
         <div class="sp-btn-row">
-          <button class="sp-btn sp-btn-plain sp-btn-mid" @click="handleResume">{{ isIntercepting ? "恢复" : "应用" }}</button>
           <span class="sp-btn-wrap" :class="{ 'sp-btn-disabled': !isApiReady }" :data-tip="!isApiReady ? '请先在设置中接入API' : ''">
             <button class="sp-btn sp-btn-dark sp-btn-big" :disabled="!isApiReady" @click="handleRestart">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
               </svg>
-              <span>重新过滤</span>
+              <span>重新分析</span>
             </button>
           </span>
         </div>
@@ -461,7 +384,7 @@ async function handleResume() {
 
     <!-- 日志框 -->
     <div ref="logBoxRef" class="sp-log">
-      <p v-if="state.logs.length === 0" class="sp-log-empty">点击「开始过滤」后,这里会显示详细日志。</p>
+      <p v-if="state.logs.length === 0" class="sp-log-empty">点击「开始分析」后,这里会显示详细日志。</p>
       <p v-for="(line, i) in state.logs" :key="i" class="sp-log-line">{{ line }}</p>
     </div>
     </div>
@@ -492,16 +415,29 @@ async function handleResume() {
           </svg>
         </button>
         <div class="sub-view-title-wrap">
-          <span class="sub-view-title">被过滤的弹幕</span>
-          <span class="detail-info" data-tip="未结合视频内容分析判断，准确度有限，仅供参考"></span>
+          <span class="sub-view-title">所有弹幕</span>
+          <span class="detail-info" data-tip="弹幕可能由于未被装填而无法在视频中找到"></span>
         </div>
       </div>
-      <div class="detail-view-body" :style="{ height: detailBodyHeight ? detailBodyHeight + 'px' : undefined }" @scroll.passive="loadMoreDetail">
-        <template v-if="visibleFiltered.length">
-          <div class="detail-list">
-            <div v-for="(item, i) in visibleFiltered" :key="i" class="detail-item">
+      <div class="detail-sort-row">
+        <label for="dm-sort">排序</label>
+        <select id="dm-sort" v-model="detailSort">
+          <option value="time-asc">时间：从早到晚</option>
+          <option value="time-desc">时间：从晚到早</option>
+          <option value="probability-desc">概率：从高到低</option>
+          <option value="probability-asc">概率：从低到高</option>
+        </select>
+        <span>{{ state.analysisItems.length }} 条</span>
+      </div>
+      <div ref="detailListRef" class="detail-view-body" :style="{ height: detailViewportHeight + 'px' }" @scroll.passive="onDetailScroll">
+        <template v-if="visibleDanmaku.length">
+          <div class="detail-list" :style="{ paddingTop: detailStart * DETAIL_ROW_HEIGHT + 'px', paddingBottom: (sortedDanmaku.length - detailEnd) * DETAIL_ROW_HEIGHT + 'px' }">
+            <div v-for="(item, i) in visibleDanmaku" :key="detailStart + i" class="detail-item">
               <span class="detail-item-time">{{ fmtTime(item.time) }}</span>
-              <span class="detail-item-text">{{ item.text }}</span>
+              <div class="detail-item-content">
+                <span class="detail-item-text" :title="item.text">{{ item.text }}</span>
+                <span class="detail-item-probability" :title="'剧透概率：' + item.probability">剧透概率 {{ (item.probability * 100).toFixed(1) }}%</span>
+              </div>
               <button class="detail-item-seek" title="跳转到该时间" @click="handleSeek(item.time)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polygon points="5 3 19 12 5 21 5 3"/>
@@ -510,8 +446,7 @@ async function handleResume() {
             </div>
           </div>
         </template>
-        <p v-else class="detail-empty">还没有过滤结果</p>
-        <p v-if="hasMoreDetail" class="detail-loading-hint">加载更多…</p>
+        <p v-else class="detail-empty">还没有分析结果</p>
       </div>
     </template>
   </div>
@@ -642,7 +577,7 @@ async function handleResume() {
   align-items: flex-end;
   gap: 8px;
   min-width: 88px;
-  justify-content: space-between;
+  justify-content: center;
 }
 /* 标签文字: 更大、颜色更深；弹幕总数标签与感叹号图标横排 */
 .sp-stat-label { font-size: 13px; color: #3a4454; }
@@ -651,58 +586,12 @@ async function handleResume() {
   align-items: center;
   gap: 2px;
 }
-/* 弹幕总数旁的感叹号图标,鼠标 hover 显示 tooltip 提示 */
-.sp-stat-info {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #f0f2f5;
-  color: #8a919f;
-  cursor: pointer;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-}
-/* 单个感叹号图标: 仅由 ::before 渲染一个 "!"(模板里不再有字面文本,避免双感叹号) */
-.sp-stat-info::before { content: "!"; }
-/* 自定义 tooltip(用 data-tip,不用 title,避免触发浏览器原生 tooltip 导致两种样式重复) */
-.sp-stat-info:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  background: rgba(31,35,41,.95);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.4;
-  padding: 6px 8px;
-  border-radius: 6px;
-  z-index: 1000;
-  box-shadow: 0 4px 12px rgba(0,0,0,.2);
-  pointer-events: none;
-}
-/* 数字放大一倍 */
+/* 统计数字 */
 .sp-stat-val { font-size: 26px; font-weight: 700; color: #1a1a1a; line-height: 1.2; }
-/* 详情: 仅过滤后出现的小号可点击文字,放已过滤数字右侧,下端对齐 */
-.sp-detail-link {
-  font-size: 11px;
-  color: #8a919f;
-  cursor: pointer;
-  line-height: 1;
-  margin-bottom: 3px;
-}
-.sp-detail-link:hover { color: #b71c1c; text-decoration: underline; }
 
 .spoiler-main { margin-bottom: 8px; }
 .sp-btn-row { display: flex; gap: 8px; }
-/* 开始/重新过滤按钮外层容器:承载禁用时的 hover 提示(disabled 按钮不触发 hover,故由外层处理) */
+/* 开始/重新分析按钮外层容器:承载禁用时的 hover 提示(disabled 按钮不触发 hover,故由外层处理) */
 .sp-btn-wrap {
   position: relative;
   display: flex;
@@ -837,6 +726,7 @@ async function handleResume() {
 
 /* 详情体：被过滤弹幕列表，在面板内滚动（高度由绑定 style 提供，撑满面板消除留白） */
 .detail-view-body {
+  overflow-anchor: none;
   overflow-y: auto;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -884,8 +774,17 @@ async function handleResume() {
   box-shadow: 0 4px 12px rgba(0,0,0,.2);
   pointer-events: none;
 }
-.detail-list { display: flex; flex-direction: column; gap: 6px; }
+.detail-sort-row { display: flex; align-items: center; gap: 8px; height: 30px; margin-bottom: 10px; font-size: 12px; color: #8a919f; }
+.detail-sort-row select { min-width: 0; flex: 1; padding: 4px; border: 1px solid #e4e7ec; border-radius: 5px; background: white; color: #1f2329; font: inherit; }
+.detail-item-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.detail-item-probability { font-size: 10px; color: #8a919f; font-variant-numeric: tabular-nums; }
+.detail-list { display: flex; flex-direction: column; }
 .detail-item {
+  height: 70px;
+  margin-bottom: 6px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  overflow: hidden;
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -902,7 +801,7 @@ async function handleResume() {
   color: #b71c1c;
   font-weight: 600;
 }
-.detail-item-text { color: #1a1a1a; word-break: break-all; flex: 1; }
+.detail-item-text { color: #1a1a1a; word-break: break-all; line-height: 18px; height: 36px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .detail-empty { color: #8a919f; font-size: 12px; margin: 0; }
 .detail-loading-hint {
   color: #8a919f;

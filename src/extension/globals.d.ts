@@ -13,6 +13,7 @@ declare const LFHttp: {
     status: number;
     statusText: string;
     ok: boolean;
+    headers: Record<string, string>;
     text(): Promise<string>;
   }>;
 };

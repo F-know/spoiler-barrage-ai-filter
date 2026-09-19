@@ -21,7 +21,7 @@ const WRAP_SELECTORS = [
 const ITEM_SELECTOR = ".bili-danmaku-x-dm, .bili-danmaku-x-dm-scroll, .bili-danmaku-x-dm-bottom";
 
 // 被屏蔽弹幕节点 -> 原文。用于点击"恢复"后把已出现的 <已屏蔽> 还原回去。
-const maskedNodes = new Map<Element, string>();
+const maskedNodes = new Map<Element, { original: string; replacement: string }>();
 
 /** 判断某条弹幕文本是否应屏蔽(有风险=true 才屏蔽) */
 function shouldMask(text: string): boolean {
@@ -40,32 +40,46 @@ function pickTextTarget(node: Element): Element {
 /** 处理一个弹幕节点:若应屏蔽,改写其文本为 <已屏蔽>,并记录原文以便还原 */
 function processDanmakuNode(node: Element) {
   const target = pickTextTarget(node);
-  const text = (target.textContent || "").trim();
-  if (!text || text === maskText()) return;
-  if (shouldMask(text)) {
-    // 只改文本,保留节点/样式/动画;记录原文,供"恢复"时还原。
-    // 若目标元素已被记录且文本本就是 MASK_TEXT,跳过重复记录。
-    if (!maskedNodes.has(target)) maskedNodes.set(target, text);
-    target.textContent = maskText();
+  const known = maskedNodes.get(target);
+  if (known) {
+    // B 站会复用节点；文本已被播放器换掉时，不得恢复上一次弹幕。
+    if (target.textContent !== known.replacement) {
+      maskedNodes.delete(target);
+    } else if (!shouldMask(known.original)) {
+      target.textContent = known.original;
+      maskedNodes.delete(target);
+      return;
+    } else {
+      const replacement = maskText();
+      if (replacement !== known.replacement) {
+        known.replacement = replacement;
+        target.textContent = replacement;
+      }
+      return;
+    }
+  }
+  const original = target.textContent || "";
+  if (original.trim() && shouldMask(original)) {
+    const replacement = maskText();
+    maskedNodes.set(target, { original, replacement });
+    target.textContent = replacement;
   }
 }
 
-/**
- * 还原所有已被屏蔽的弹幕节点,恢复其原文。
- * 点击"恢复"按钮时调用,让已出现在视频中的 <已屏蔽> 重新显示真实文本。
- */
+/** 只还原仍属于本插件的改写，避免污染播放器已复用的节点。 */
 export function restoreAllMasked(): void {
-  for (const [target, original] of maskedNodes) {
-    if (target.isConnected) target.textContent = original;
+  for (const [target, saved] of maskedNodes) {
+    if (target.isConnected && target.textContent === saved.replacement) target.textContent = saved.original;
   }
   maskedNodes.clear();
 }
 
-/**
- * 全量重新屏蔽当前页面上所有应屏蔽的弹幕节点。
- * 点击"应用"(重新开启拦截)时调用,让已经还原回原文的 <已屏蔽> 立即恢复为 <已屏蔽>。
- */
+/** 双向同步：提高阈值会恢复原文，降低阈值会屏蔽当前可见弹幕。 */
 export function applyAllMasked(): void {
+  for (const target of maskedNodes.keys()) {
+    if (!target.isConnected) maskedNodes.delete(target);
+    else processDanmakuNode(target);
+  }
   for (const node of collectDmNodes()) processDanmakuNode(node);
 }
 
@@ -96,9 +110,23 @@ export function registerInterceptor(): () => void {
 
   const sweep = () => {
     if (!active) return;
-    const nodes = collectDmNodes();
-    for (const node of nodes) processDanmakuNode(node);
+    applyAllMasked();
   };
+
+  let lastItems = store.get().analysisItems;
+  let lastThreshold = store.get().hideThreshold;
+  let lastEnabled = store.get().interceptEnabled;
+  let lastReplacement = store.get().replaceText;
+  const unsubscribe = store.subscribe(state => {
+    if (state.analysisItems !== lastItems || state.hideThreshold !== lastThreshold ||
+      state.interceptEnabled !== lastEnabled || state.replaceText !== lastReplacement) {
+      lastItems = state.analysisItems;
+      lastThreshold = state.hideThreshold;
+      lastEnabled = state.interceptEnabled;
+      lastReplacement = state.replaceText;
+      sweep();
+    }
+  });
 
   // 观察器:新增节点即时处理
   const attach = () => {
@@ -126,6 +154,8 @@ export function registerInterceptor(): () => void {
 
   return () => {
     active = false;
+    unsubscribe();
+    restoreAllMasked();
     if (timer) clearInterval(timer);
     for (const o of observers) o.disconnect();
     observers.length = 0;

@@ -1,6 +1,14 @@
 export type MainWorldOperation = "control-playback" | "seek" | "read-episode-info";
 
-export type VideoAnalysisEntries = Record<string, boolean>;
+import type { ScoredDanmaku } from '../services/probability';
+
+export type VideoAnalysisRecord = {
+  url: string;
+  cid: number;
+  policy: string;
+  completedAt: number;
+  items: ScoredDanmaku[];
+};
 
 export type ExtensionRequest =
   | {
@@ -19,17 +27,14 @@ export type ExtensionRequest =
       args: unknown[];
     }
   | {
-      type: "analysis-cache-read";
-      videoKey: string;
+      type: "video-analysis-cache-read" | "video-analysis-cache-status";
     }
   | {
-      type: "analysis-cache-write";
-      videoKey: string;
-      entries: VideoAnalysisEntries;
-      maxVideos: number;
+      type: "video-analysis-cache-write";
+      record: VideoAnalysisRecord;
     }
   | {
-      type: "analysis-cache-clear";
+      type: "video-analysis-cache-clear";
     };
 
 export type SerializableRequestInit = {
@@ -58,8 +63,7 @@ export type ErrorPayload = {
 
 export type AnalysisCacheReadPayload = {
   ok: true;
-  found: boolean;
-  entries: VideoAnalysisEntries;
+  record: VideoAnalysisRecord | null;
 };
 
 export type AnalysisCacheClearPayload = {

@@ -10,16 +10,26 @@ import {
   loadPanelVisibility,
 } from "./src/services/state";
 import { registerInterceptor, restoreAllMasked } from "./src/services/interceptor";
-import { cleanVideoKey } from "./src/services/classify";
-import { runOnce } from "./src/services/engine";
+import { runOnce, restoreLastVideo, stop } from "./src/services/engine";
+import { videoNavigationKey } from "./src/extension/video-cache";
 
 // 全局侧边悬浮容器 id
 const HOST_ID = "lf-spoiler-dm-root";
 // 右侧常驻 robot 触发按钮 id(面板最小化隐藏后,点它重新弹出)
 const TOGGLE_ID = "lf-spoiler-dm-toggle";
 
+/** 规约当前页面 URL，仅用于识别 B 站 SPA 是否切换了视频。 */
+function cleanVideoKey(url) {
+  if (!url) return "";
+  try {
+    return videoNavigationKey(url);
+  } catch {
+    return url.split(/[?#]/)[0] || url;
+  }
+}
+
 async function bootstrap() {
-// 先加载已保存的 OpenAI 兼容接口配置(用户填过的 url/模型/key),再挂载面板,
+// 先加载已保存的 Jev 配置，再挂载面板，
 // 保证打开设置面板时显示的是持久化后的值,且过滤按钮可用性基于真实配置判断。
 await store.loadApiConfig();
 const panelVisible = await loadPanelVisibility();
@@ -133,8 +143,7 @@ async function initAutoDetect() {
 function shouldAutoRun() {
   const state = store.get();
   return state.mode === "auto" &&
-    !!state.apiUrl?.trim() &&
-    !!state.apiModel?.trim() &&
+    state.phase === "idle" &&
     !!state.apiKey?.trim();
 }
 
@@ -142,11 +151,13 @@ function shouldAutoRun() {
 // 因此这里做有限重试:拿不到就在短时间内反复读,直到成功或超时。
 // 避免"切集瞬间 readEpisodeInfo 返回空 -> 视频信息区被清空后永远不恢复"的竞态。
 function refreshVideoInfo(maxAttempts = 15, delayMs = 250, previousCid = null) {
+  const expectedKey = cleanVideoKey(location.href);
   return new Promise((resolve) => {
     let attempt = 0;
     const tick = async () => {
       attempt++;
       const info = await readEpisodeInfo();
+      if (cleanVideoKey(location.href) !== expectedKey) { resolve(false); return; }
       const isNewVideo = info && info.cid && (previousCid == null || info.cid !== previousCid);
       if (isNewVideo) {
         store.patch({
@@ -156,6 +167,8 @@ function refreshVideoInfo(maxAttempts = 15, delayMs = 250, previousCid = null) {
           cover: info.cover || "",
           danmakuCount: info.danmakuCount || "",
         });
+        await restoreLastVideo();
+        if (cleanVideoKey(location.href) !== expectedKey) { resolve(false); return; }
         resolve(true);
         return;
       }
@@ -181,6 +194,7 @@ function watchUrlChange() {
     if (cur) {
       lastVideoKey = cur;
       const previousCid = store.get().cid;
+      stop(false);
       // 还原旧视频已屏蔽的弹幕节点 + 清空拦截判定 + 重置面板运行态到 idle。
       restoreAllMasked();
       store.resetForUrlChange();

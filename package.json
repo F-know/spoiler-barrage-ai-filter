@@ -7,6 +7,8 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
+    "test": "node --import ./tests/register.mjs --test tests/*.test.mjs",
+    "test:jev-live": "node --import ./tests/register.mjs scripts/test-jev-live.mjs",
     "build": "npm run build:content && npm run build:background",
     "build:content": "vite build --mode content",
     "build:background": "vite build --mode background",
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@types/chrome": "^0.2.7",
     "@vitejs/plugin-vue": "^6.0.8",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.9.3",
     "vite": "^8.2.2",
     "vue-tsc": "^3.3.11"

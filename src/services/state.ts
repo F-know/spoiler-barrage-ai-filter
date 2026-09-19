@@ -2,27 +2,28 @@
 // 这个单例对象驱动 UI 和拦截逻辑,并提供跨模块的响应式状态。
 
 import { segUrl, fetchViewDanmakuCount, formatCount } from "./bilibili";
+import { DEFAULT_SYSTEM_PROMPT, normalizeSystemPrompt } from "./prompts";
+import type { ScoredDanmaku } from "./probability";
 import {
-  DEFAULT_EXTRA_REQUEST_PARAMS,
+  DEFAULT_BATCH_SIZE, DEFAULT_CONCURRENCY, DEFAULT_HIDE_THRESHOLD,
+  normalizeBatchSize, normalizeConcurrency, normalizeHideThreshold, normalizeRequestTimeoutSeconds,
   DEFAULT_REQUEST_TIMEOUT_SECONDS,
 } from "./api-config";
 
-/** chrome.storage.local 中存储 OpenAI 兼容接口配置的键。 */
-const API_CFG_KEY = "dmApiConfig_v1";
+/** Jev 配置单独保存，不继承旧模型的 Key、参数或高并发值。 */
+const API_CFG_KEY = "dmJevConfig_v1";
 const PANEL_VISIBLE_KEY = "panelVisible_v1";
 
 export type Mode = "auto" | "manual";
 
 type PersistedConfig = {
-  apiUrl?: string;
-  apiModel?: string;
   apiKey?: string;
-  extraRequestParams?: string;
+  systemPrompt?: string;
+  hideThreshold?: number;
   requestTimeoutSeconds?: number;
   batchSize?: number;
   concurrency?: number;
   replaceText?: string;
-  cacheVideoCount?: number;
   mode?: Mode;
 };
 export type Phase =
@@ -31,11 +32,6 @@ export type Phase =
   | "analyzing"   // AI 分析中
   | "done"        // 本集处理完成
   | "error";      // 出错
-
-export type ClassifiedEntry = {
-  text: string;
-  risk: boolean;
-};
 
 /** 一条被过滤(屏蔽)的弹幕及其在视频中的出现时间(秒) */
 export type FilteredDm = {
@@ -53,28 +49,22 @@ export type SpoilState = {
   cover: string;
   /** 当前视频弹幕数量(展示用) */
   danmakuCount: string;
-  /** 当前集已分析过的弹幕 text -> level */
-  classified: Record<string, ClassifiedEntry>;
+  /** 全部原始弹幕的分析概率，包含重复条目和时间。 */
+  analysisItems: ScoredDanmaku[];
   /** 自动模式是否开启"处理完自动播放" */
   resumeOnDone: boolean;
-  /** OpenAI 兼容接口 baseURL(不含 /chat/completions,请求时拼接) */
-  apiUrl: string;
-  /** 模型名 */
-  apiModel: string;
   /** API Key */
   apiKey: string;
-  /** 合并进 chat/completions 请求体的自定义 JSON 对象。 */
-  extraRequestParams: string;
+  systemPrompt: string;
+  hideThreshold: number;
   /** 正式分析与接口测试共用的单次请求超时时间（秒）。 */
   requestTimeoutSeconds: number;
-  /** 单次请求处理的弹幕数量(默认 100) */
+  /** 单次请求处理的弹幕数量(默认 1000) */
   batchSize: number;
-  /** 请求并发数(默认 500) */
+  /** 请求并发数(默认 10) */
   concurrency: number;
   /** 剧透弹幕替换文本(默认 <已屏蔽>) */
   replaceText: string;
-  /** 缓存分析结果的近期视频数量(默认 3) */
-  cacheVideoCount: number;
   /** 进度:已分析条数 / 总数 */
   analyzedCount: number;
   totalCount: number;
@@ -100,17 +90,15 @@ function defaultState(): SpoilState {
     title: "",
     cover: "",
     danmakuCount: "",
-    classified: {},
+    analysisItems: [],
     resumeOnDone: true,
-    apiUrl: "",
-    apiModel: "",
     apiKey: "",
-    extraRequestParams: DEFAULT_EXTRA_REQUEST_PARAMS,
+    systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    hideThreshold: DEFAULT_HIDE_THRESHOLD,
     requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    batchSize: 100,
-    concurrency: 500,
+    batchSize: DEFAULT_BATCH_SIZE,
+    concurrency: DEFAULT_CONCURRENCY,
     replaceText: "<已屏蔽>",
-    cacheVideoCount: 3,
     analyzedCount: 0,
     totalCount: 0,
     errorMsg: "",
@@ -125,8 +113,7 @@ function defaultState(): SpoilState {
 class StateStore {
   private state: SpoilState = defaultState();
   private listeners = new Set<(s: SpoilState) => void>();
-  /** 拦截回调:当前哪些文本应屏蔽(有风险=true 才屏蔽) */
-  private shouldHideFn: ((text: string) => boolean | undefined) | null = null;
+  private probabilities = new Map<string, number>();
 
   get(): SpoilState {
     return this.state;
@@ -144,7 +131,23 @@ class StateStore {
   /** 合并更新状态(浅合并),然后通知 UI */
   patch(p: Partial<SpoilState>) {
     Object.assign(this.state, p);
+    if (p.analysisItems !== undefined) {
+      this.probabilities = new Map(p.analysisItems.map(item => [item.text.trim(), item.probability]));
+    }
+    if (p.analysisItems !== undefined || p.hideThreshold !== undefined || p.interceptEnabled !== undefined) {
+      this.state.filteredDm = this.state.interceptEnabled
+        ? this.state.analysisItems.filter(item => item.probability >= this.state.hideThreshold)
+        : [];
+    }
     this.emit();
+  }
+
+  setThreshold(value: unknown) {
+    this.patch({ hideThreshold: normalizeHideThreshold(value) });
+  }
+
+  setAnalysis(items: ScoredDanmaku[], append = false) {
+    this.patch({ analysisItems: append ? [...this.state.analysisItems, ...items] : items });
   }
 
   /** 追加一条带时间戳的运行日志并通知 UI */
@@ -157,6 +160,7 @@ class StateStore {
   }
 
   resetForEpisode(cid: number, aid: number, title: string, cover: string, danmakuCount: string) {
+    this.probabilities.clear();
     this.state = {
       ...defaultState(),
       cid,
@@ -164,15 +168,13 @@ class StateStore {
       title,
       cover,
       danmakuCount,
-      apiUrl: this.state.apiUrl,
-      apiModel: this.state.apiModel,
       apiKey: this.state.apiKey,
-      extraRequestParams: this.state.extraRequestParams,
+      systemPrompt: this.state.systemPrompt,
+      hideThreshold: this.state.hideThreshold,
       requestTimeoutSeconds: this.state.requestTimeoutSeconds,
       batchSize: this.state.batchSize,
       concurrency: this.state.concurrency,
       replaceText: this.state.replaceText,
-      cacheVideoCount: this.state.cacheVideoCount,
       mode: this.state.mode,
       resumeOnDone: this.state.resumeOnDone,
     };
@@ -188,51 +190,40 @@ class StateStore {
   resetForUrlChange() {
     this.state = {
       ...defaultState(),
-      apiUrl: this.state.apiUrl,
-      apiModel: this.state.apiModel,
       apiKey: this.state.apiKey,
-      extraRequestParams: this.state.extraRequestParams,
+      systemPrompt: this.state.systemPrompt,
+      hideThreshold: this.state.hideThreshold,
       requestTimeoutSeconds: this.state.requestTimeoutSeconds,
       batchSize: this.state.batchSize,
       concurrency: this.state.concurrency,
       replaceText: this.state.replaceText,
-      cacheVideoCount: this.state.cacheVideoCount,
       mode: this.state.mode,
       resumeOnDone: this.state.resumeOnDone,
     };
     // 清空拦截判定,避免拦截器继续用旧视频的 risk 结果屏蔽新视频弹幕。
-    this.shouldHideFn = null;
+    this.probabilities.clear();
     this.emit();
   }
 
-  /** 注册"文本 -> 是否有风险(boolean)"判定函数(拦截器用) */
-  setShouldHide(fn: (text: string) => boolean | undefined) {
-    this.shouldHideFn = fn;
-  }
-
-  /** 持久化 OpenAI 兼容接口配置和功能参数。 */
+  /** 持久化 Jev 配置和功能参数。 */
   async saveApiConfig(cfg: {
-    apiUrl: string;
-    apiModel: string;
     apiKey: string;
-    extraRequestParams: string;
+    systemPrompt?: string;
+    hideThreshold: number;
     requestTimeoutSeconds: number;
     batchSize: number;
     concurrency: number;
     replaceText: string;
-    cacheVideoCount: number;
   }): Promise<void> {
     try {
       await LFStore.set(API_CFG_KEY, {
-        apiUrl: cfg.apiUrl,
-        apiModel: cfg.apiModel,
         apiKey: cfg.apiKey,
-        extraRequestParams: cfg.extraRequestParams,
+        systemPrompt: normalizeSystemPrompt(cfg.systemPrompt ?? this.state.systemPrompt),
+        hideThreshold: cfg.hideThreshold,
         requestTimeoutSeconds: cfg.requestTimeoutSeconds,
         batchSize: cfg.batchSize,
         concurrency: cfg.concurrency,
         replaceText: cfg.replaceText,
-        cacheVideoCount: cfg.cacheVideoCount,
         mode: this.state.mode,
       });
     } catch {
@@ -256,31 +247,26 @@ class StateStore {
 
   /** 启动时加载已保存的接口配置，并覆盖内存中的默认值。 */
   async loadApiConfig(): Promise<{
-    apiUrl: string;
-    apiModel: string;
     apiKey: string;
-    extraRequestParams: string;
+    systemPrompt: string;
+    hideThreshold: number;
     requestTimeoutSeconds: number;
     batchSize: number;
     concurrency: number;
     replaceText: string;
-    cacheVideoCount: number;
     mode: Mode;
   } | null> {
     try {
       const v = await LFStore.get<PersistedConfig | null>(API_CFG_KEY, null);
       if (v && typeof v === "object") {
         const cfg = {
-          apiUrl: v.apiUrl ?? "",
-          apiModel: v.apiModel ?? "",
           apiKey: v.apiKey ?? "",
-          extraRequestParams: v.extraRequestParams ?? DEFAULT_EXTRA_REQUEST_PARAMS,
-          requestTimeoutSeconds: v.requestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
-          // 将旧版本的默认值 30 平滑迁移到新默认值；其他自定义值保持不变。
-          batchSize: v.batchSize == null || v.batchSize === 30 ? 100 : v.batchSize,
-          concurrency: v.concurrency ?? 500,
+          systemPrompt: normalizeSystemPrompt(v.systemPrompt),
+          hideThreshold: normalizeHideThreshold(v.hideThreshold),
+          requestTimeoutSeconds: normalizeRequestTimeoutSeconds(v.requestTimeoutSeconds),
+          batchSize: normalizeBatchSize(v.batchSize),
+          concurrency: normalizeConcurrency(v.concurrency),
           replaceText: v.replaceText ?? "<已屏蔽>",
-          cacheVideoCount: v.cacheVideoCount ?? 3,
           mode: v.mode === "auto" ? "auto" as const : "manual" as const,
         };
         this.patch(cfg);
@@ -295,11 +281,9 @@ class StateStore {
   /** 判断是否应屏蔽一条弹幕(拦截器实际用到的唯一决策) */
   shouldHide(text: string): boolean {
     // 拦截开关:用户在完成态点击"恢复"后,后续新出现的弹幕不再屏蔽。
-    // 已出现并被改写为 <已屏蔽> 的节点不会被还原(用户已确认接受)。
     if (!this.state.interceptEnabled) return false;
-    const risk = this.shouldHideFn ? this.shouldHideFn(text) : undefined;
-    // 两档:有风险(true) -> 屏蔽;拿不准/无风险(false) -> 保留。
-    return risk === true;
+    const probability = this.probabilities.get(text.trim());
+    return probability !== undefined && probability >= this.state.hideThreshold;
   }
 }
 

@@ -1,62 +1,77 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from "vue";
 import { store, type SpoilState } from "../src/services/state";
-import { clearCache, testApi, type ApiTestResult } from "../src/services/classify";
-import { normalizeRequestTimeoutSeconds } from "../src/services/api-config";
+import { testApi, type ApiTestResult } from "../src/services/classify";
+import {
+  MAX_BATCH_SIZE, MAX_CONCURRENCY, normalizeRequestTimeoutSeconds,
+  normalizeBatchSize, normalizeConcurrency,
+} from "../src/services/api-config";
+
+import { clearVideoCache, hasVideoCache } from "../src/extension/video-cache";
+import { DEFAULT_SYSTEM_PROMPT, normalizeSystemPrompt } from "../src/services/prompts";
 
 const state = ref<SpoilState>({ ...store.get() });
 let unsub: (() => void) | null = null;
 
 // API 板块
-const urlInput = ref(state.value.apiUrl);
-const modelInput = ref(state.value.apiModel);
 const keyInput = ref(state.value.apiKey);
-const extraRequestParamsInput = ref(state.value.extraRequestParams);
+const systemPromptInput = ref(state.value.systemPrompt);
 const requestTimeoutSecondsInput = ref(state.value.requestTimeoutSeconds);
 // 功能板块
 const batchSizeInput = ref(state.value.batchSize);
 const concurrencyInput = ref(state.value.concurrency);
 const replaceTextInput = ref(state.value.replaceText);
-const cacheVideoCountInput = ref(state.value.cacheVideoCount);
 
-// 功能板块默认值
-const DEFAULT_BATCH = 100;
-const DEFAULT_CONCURRENCY = 500;
-const DEFAULT_REPLACE_TEXT = "<已屏蔽>";
-const DEFAULT_CACHE_COUNT = 3;
+const hasCache = ref(false);
+let cacheTimer: ReturnType<typeof setInterval> | null = null;
+let checkingCache = false;
+let disposed = false;
+let cacheRevision = 0;
+async function refreshCacheStatus() {
+  if (checkingCache || clearState.value === "clearing") return;
+  checkingCache = true;
+  const revision = cacheRevision;
+  try {
+    const available = await hasVideoCache();
+    if (!disposed && revision === cacheRevision) hasCache.value = available;
+  } catch { if (!disposed && revision === cacheRevision) hasCache.value = false; }
+  finally { checkingCache = false; }
+}
 
 onMounted(() => {
+  void refreshCacheStatus();
+  cacheTimer = setInterval(() => { void refreshCacheStatus(); }, 2000);
   unsub = store.subscribe((s) => {
+    // 日志、阈值或进度更新不覆盖尚未提交的提示词编辑。
+    if (s.systemPrompt !== state.value.systemPrompt) systemPromptInput.value = s.systemPrompt;
     state.value = { ...s };
-    urlInput.value = s.apiUrl;
-    modelInput.value = s.apiModel;
     keyInput.value = s.apiKey;
-    extraRequestParamsInput.value = s.extraRequestParams;
     requestTimeoutSecondsInput.value = s.requestTimeoutSeconds;
     batchSizeInput.value = s.batchSize;
     concurrencyInput.value = s.concurrency;
     replaceTextInput.value = s.replaceText;
-    cacheVideoCountInput.value = s.cacheVideoCount;
   });
 });
 onBeforeUnmount(() => {
+  disposed = true;
+  if (cacheTimer) clearInterval(cacheTimer);
+  if (clearTimer) clearTimeout(clearTimer);
   if (unsub) unsub();
 });
 
 /** 把当前所有设置写回 store 并持久化(及时生效,无保存按钮) */
 function persist() {
   const cfg = {
-    apiUrl: urlInput.value.trim(),
-    apiModel: modelInput.value.trim(),
     apiKey: keyInput.value.trim(),
-    extraRequestParams: extraRequestParamsInput.value.trim(),
+    systemPrompt: normalizeSystemPrompt(systemPromptInput.value),
     requestTimeoutSeconds: normalizeRequestTimeoutSeconds(requestTimeoutSecondsInput.value),
-    batchSize: Math.max(1, Math.floor(Number(batchSizeInput.value) || DEFAULT_BATCH)),
-    concurrency: Math.max(1, Math.floor(Number(concurrencyInput.value) || DEFAULT_CONCURRENCY)),
+    hideThreshold: store.get().hideThreshold,
+    batchSize: normalizeBatchSize(batchSizeInput.value),
+    concurrency: normalizeConcurrency(concurrencyInput.value),
     replaceText: replaceTextInput.value.trim(),
-    cacheVideoCount: Math.max(1, Math.floor(Number(cacheVideoCountInput.value) || DEFAULT_CACHE_COUNT)),
   };
   store.patch(cfg);
+  systemPromptInput.value = cfg.systemPrompt;
   void store.saveApiConfig(cfg);
 }
 
@@ -70,27 +85,26 @@ function onFeatureChange() {
   persist();
 }
 
-/** 功能板块全部恢复默认(点击标题旁旋转箭头触发) */
-function resetFeatures() {
-  batchSizeInput.value = DEFAULT_BATCH;
-  concurrencyInput.value = DEFAULT_CONCURRENCY;
-  replaceTextInput.value = DEFAULT_REPLACE_TEXT;
-  cacheVideoCountInput.value = DEFAULT_CACHE_COUNT;
+function resetSystemPrompt() {
+  systemPromptInput.value = DEFAULT_SYSTEM_PROMPT;
   persist();
 }
+
 type ClearState = "idle" | "clearing" | "ok" | "error";
 const clearState = ref<ClearState>("idle");
 const clearMsg = ref<string>("");
 let clearTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function handleClearCache() {
-  if (clearState.value === "clearing") return;
+  if (!hasCache.value || clearState.value === "clearing") return;
   clearState.value = "clearing";
+  cacheRevision++;
   clearMsg.value = "";
   try {
-    const n = await clearCache();
+    const n = await clearVideoCache();
+    hasCache.value = false;
     clearState.value = "ok";
-    clearMsg.value = n > 0 ? `已清空 ${n} 个视频的缓存` : "缓存已是空的";
+    clearMsg.value = n > 0 ? "已清空视频缓存" : "缓存已是空的";
   } catch (e: any) {
     clearState.value = "error";
     clearMsg.value = "清理失败：" + (e?.message || String(e));
@@ -106,27 +120,25 @@ async function handleClearCache() {
 // ---- 测试 API 连接 ----
 type TestState = "idle" | "testing" | "ok" | "error";
 const testState = ref<TestState>("idle");
-const testError = ref<string>("");
 const testCode = ref<string>("");
 const testMsg = ref<string>("");
 
 async function handleTestApi() {
   if (testState.value === "testing") return;
   testState.value = "testing";
-  testError.value = "";
   testCode.value = "";
   testMsg.value = "";
   const cfg = {
-    url: urlInput.value.trim(),
-    model: modelInput.value.trim(),
     apiKey: keyInput.value.trim(),
-    extraRequestParams: extraRequestParamsInput.value.trim(),
+    systemPrompt: normalizeSystemPrompt(systemPromptInput.value),
+    hideThreshold: store.get().hideThreshold,
     requestTimeoutSeconds: normalizeRequestTimeoutSeconds(requestTimeoutSecondsInput.value),
   };
   try {
     const r: ApiTestResult = await testApi(cfg);
     if (r.ok) {
       testState.value = "ok";
+      testMsg.value = `连接成功 · ${(r.elapsedMs / 1000).toFixed(2)} 秒`;
     } else {
       testState.value = "error";
       testCode.value = r.code;
@@ -144,20 +156,9 @@ async function handleTestApi() {
   <div class="setting-shell">
     <!-- API 板块 -->
     <div class="setting-group">
-      <div class="setting-group-title">API</div>
-      <label class="setting-label">接口地址 (Base URL)</label>
-      <input v-model="urlInput" type="text" class="key-input" placeholder="" @change="onApiChange" />
-      <label class="setting-label">模型名称</label>
-      <input v-model="modelInput" type="text" class="key-input" placeholder="" @change="onApiChange" />
-      <label class="setting-label">API Key</label>
-      <input v-model="keyInput" type="password" class="key-input" placeholder="sk-..." @change="onApiChange" />
-      <label class="setting-label">自定义额外参数（JSON）</label>
-      <textarea
-        v-model="extraRequestParamsInput"
-        class="key-input extra-params-input"
-        spellcheck="false"
-        @change="onApiChange"
-      ></textarea>
+      <div class="setting-group-title-wrap"><span class="setting-group-title">API</span></div>
+      <label class="setting-label" for="jev-api-key">Jev API Key</label>
+      <input id="jev-api-key" v-model="keyInput" type="password" class="key-input" placeholder="" autocomplete="off" spellcheck="false" @change="onApiChange" />
       <div class="setting-row api-timeout-row">
         <label class="setting-label">请求超时时间（秒）</label>
         <input
@@ -165,6 +166,7 @@ async function handleTestApi() {
           type="number"
           class="small-input"
           min="1"
+          max="600"
           step="1"
           @change="onApiChange"
         />
@@ -179,14 +181,14 @@ async function handleTestApi() {
           <svg class="api-test-mark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="20 6 9 17 4 12"/>
           </svg>
-          <span class="api-test-text">OK</span>
+          <span class="api-test-text" :title="testMsg">{{ testMsg }}</span>
         </span>
         <span v-else-if="testState === 'error'" class="api-test-status error" :title="testMsg">
           <svg class="api-test-mark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"/>
             <line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
-          <span class="api-test-text">Error {{ testCode }}</span>
+          <span class="api-test-text">{{ testMsg || testCode }}</span>
         </span>
       </span>
     </div>
@@ -195,35 +197,27 @@ async function handleTestApi() {
 
     <!-- 功能板块 -->
     <div class="setting-group">
-      <div class="setting-group-title-wrap">
-        <span class="setting-group-title">功能</span>
-        <button class="feature-reset" title="恢复默认配置" @click="resetFeatures">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 12a9 9 0 1 0 3-6.71L3 8"/>
-            <path d="M3 3v5h5"/>
-          </svg>
-        </button>
+      <div class="setting-group-title-wrap"><span class="setting-group-title">功能</span></div>
+      <div class="prompt-heading">
+        <label class="setting-label" for="jev-system-prompt">系统提示词</label>
+        <button class="prompt-reset" @click="resetSystemPrompt">恢复默认</button>
       </div>
+      <textarea id="jev-system-prompt" v-model="systemPromptInput" class="key-input system-prompt-input" rows="5" spellcheck="false" @change="persist"></textarea>
 
       <div class="setting-row">
         <label class="setting-label">单次请求处理弹幕数量</label>
-        <input v-model.number="batchSizeInput" type="number" class="small-input" min="1" step="1" @change="onFeatureChange" />
+        <input v-model.number="batchSizeInput" type="number" class="small-input" min="1" :max="MAX_BATCH_SIZE" step="1" @change="onFeatureChange" />
       </div>
       <div class="setting-row">
         <label class="setting-label">请求并发数</label>
-        <input v-model.number="concurrencyInput" type="number" class="small-input" min="1" step="1" @change="onFeatureChange" />
+        <input v-model.number="concurrencyInput" type="number" class="small-input" min="1" :max="MAX_CONCURRENCY" step="1" @change="onFeatureChange" />
       </div>
       <div class="setting-row">
         <label class="setting-label">剧透弹幕替换文本（可留空）</label>
         <input v-model="replaceTextInput" type="text" class="small-input" @change="onFeatureChange" />
       </div>
-      <div class="setting-row">
-        <label class="setting-label">缓存分析结果的近期视频数量</label>
-        <input v-model.number="cacheVideoCountInput" type="number" class="small-input" min="1" step="1" @change="onFeatureChange" />
-      </div>
-
       <span class="clear-cache-row">
-        <button class="btn danger" :disabled="clearState === 'clearing'" @click="handleClearCache">清空分析缓存</button>
+        <button class="btn danger" :disabled="!hasCache || clearState === 'clearing'" @click="handleClearCache">清除上次分析缓存</button>
         <span v-if="clearState === 'clearing'" class="clear-cache-status clearing">
           <span class="clear-cache-spinner"></span>
           <span class="clear-cache-text">正在清理…</span>
@@ -263,14 +257,23 @@ async function handleTestApi() {
 </template>
 
 <style scoped>
+.prompt-heading { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.prompt-reset { border: 0; background: none; padding: 0; font: inherit; font-size: 11px; color: #8a919f; cursor: pointer; }
+.system-prompt-input { resize: vertical; min-height: 100px; line-height: 1.6; margin-bottom: 4px; }
 .setting-shell {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
   font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
   color: #1f2329;
 }
 .setting-footer {
   display: flex;
   justify-content: flex-end;
-  margin-top: 14px;
+  margin-top: auto;
+  padding-top: 14px;
+  flex-shrink: 0;
 }
 .github-link {
   display: inline-flex;
@@ -299,20 +302,6 @@ async function handleTestApi() {
   font-weight: 600;
   color: #1f2329;
 }
-.feature-reset {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: transparent;
-  color: #8a919f;
-  cursor: pointer;
-  padding: 0;
-  border-radius: 4px;
-}
-.feature-reset:hover { color: #1f2329; background: #f5f7fa; }
 .setting-label { font-size: 12px; color: #8a919f; }
 .key-input {
   display: block;
@@ -328,12 +317,6 @@ async function handleTestApi() {
   margin-bottom: 12px;
 }
 .key-input:focus { outline: none; border-color: #1a1a1a; }
-.extra-params-input {
-  min-height: 58px;
-  resize: vertical;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  line-height: 1.45;
-}
 .setting-row {
   display: flex;
   align-items: center;
@@ -417,17 +400,18 @@ async function handleTestApi() {
 .api-test-btn:disabled { opacity: 0.6; cursor: default; }
 .api-test-status {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 5px;
   font-size: 12px;
   font-weight: 600;
-  line-height: 1;
+  line-height: 1.5;
 }
 .api-test-status.testing { color: #8a919f; }
 .api-test-status.ok { color: #2e9e5b; }
 .api-test-status.error { color: #d64545; }
 .api-test-mark { flex-shrink: 0; }
-.api-test-text { white-space: nowrap; }
+.api-test-text { overflow-wrap: anywhere; }
 .api-test-spinner {
   width: 12px;
   height: 12px;

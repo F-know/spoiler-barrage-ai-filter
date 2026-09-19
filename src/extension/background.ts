@@ -3,31 +3,26 @@ import type {
   AnalysisCacheReadPayload,
   ErrorPayload,
   ExtensionRequest,
+  VideoAnalysisRecord,
   HttpResponsePayload,
   MainWorldOperation,
-  VideoAnalysisEntries,
 } from "./messages";
+
+import { validVideoRecord } from "./video-cache";
 
 const pendingRequests = new Map<string, AbortController>();
 
 const DATABASE_NAME = "spoiler-barrage-ai-filter";
-const DATABASE_VERSION = 1;
-const CACHE_STORE_NAME = "video-analysis-cache";
+const DATABASE_VERSION = 4;
+const CACHE_STORE_NAME = "last-video-analysis";
+const OLD_GLOBAL_CACHE_STORE_NAME = "global-text-hash-cache";
+const OLD_VIDEO_CACHE_STORE_NAME = "video-analysis-cache";
 const LEGACY_CACHE_KEY = "dmRiskCache_v4";
 
-type VideoAnalysisRecord = {
-  videoKey: string;
-  entries: VideoAnalysisEntries;
-  lastAccessed: number;
-};
 
-type LegacyVideoCache = {
-  order: string[];
-  map: Record<string, VideoAnalysisEntries>;
-};
 
 let databasePromise: Promise<IDBDatabase> | null = null;
-let migrationPromise: Promise<void> | null = null;
+let legacyCleanupPromise: Promise<void> | null = null;
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -50,13 +45,20 @@ function openDatabase(): Promise<IDBDatabase> {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       const database = request.result;
+      if (database.objectStoreNames.contains("jev-probability-cache")) database.deleteObjectStore("jev-probability-cache");
+      if (database.objectStoreNames.contains(OLD_VIDEO_CACHE_STORE_NAME)) {
+        database.deleteObjectStore(OLD_VIDEO_CACHE_STORE_NAME);
+      }
+      if (database.objectStoreNames.contains(OLD_GLOBAL_CACHE_STORE_NAME)) {
+        database.deleteObjectStore(OLD_GLOBAL_CACHE_STORE_NAME);
+      }
       if (!database.objectStoreNames.contains(CACHE_STORE_NAME)) {
-        database.createObjectStore(CACHE_STORE_NAME, { keyPath: "videoKey" });
+        database.createObjectStore(CACHE_STORE_NAME);
       }
     };
     request.onsuccess = () => {
       const database = request.result;
-      database.onversionchange = () => database.close();
+      database.onversionchange = () => { database.close(); databasePromise = null; };
       resolve(database);
     };
     request.onerror = () => reject(request.error || new Error("Unable to open analysis cache"));
@@ -68,102 +70,73 @@ function openDatabase(): Promise<IDBDatabase> {
   return databasePromise;
 }
 
-function isLegacyCache(value: unknown): value is LegacyVideoCache {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<LegacyVideoCache>;
-  return Array.isArray(candidate.order) && !!candidate.map && typeof candidate.map === "object";
-}
-
-/** 将旧版 chrome.storage.local 大对象一次性迁入扩展自己的 IndexedDB。 */
-async function migrateLegacyCache(): Promise<void> {
-  const stored = await chrome.storage.local.get(LEGACY_CACHE_KEY);
-  const legacy = stored[LEGACY_CACHE_KEY];
-  if (!isLegacyCache(legacy)) return;
-
-  const orderedKeys = [
-    ...legacy.order.filter((key) => typeof key === "string" && key in legacy.map),
-    ...Object.keys(legacy.map).filter((key) => !legacy.order.includes(key)),
-  ];
-  const uniqueKeys = [...new Set(orderedKeys)];
-  const database = await openDatabase();
-  const transaction = database.transaction(CACHE_STORE_NAME, "readwrite");
-  const store = transaction.objectStore(CACHE_STORE_NAME);
-  const now = Date.now();
-  uniqueKeys.forEach((videoKey, index) => {
-    const entries = legacy.map[videoKey];
-    if (!entries || typeof entries !== "object") return;
-    store.put({
-      videoKey,
-      entries,
-      lastAccessed: now - uniqueKeys.length + index,
-    } satisfies VideoAnalysisRecord);
-  });
-  await transactionComplete(transaction);
-  await chrome.storage.local.remove(LEGACY_CACHE_KEY);
-}
-
-async function ensureLegacyCacheMigrated(): Promise<void> {
-  if (!migrationPromise) {
-    migrationPromise = migrateLegacyCache().catch((error) => {
-      console.warn("[剧透弹幕AI过滤器] 旧分析缓存迁移失败，保留旧数据", error);
+/** 清理旧版存储，当前缓存仅保存最后一次完成的视频分析。 */
+async function ensureLegacyCacheCleaned(): Promise<void> {
+  if (!legacyCleanupPromise) {
+    legacyCleanupPromise = chrome.storage.local.remove(LEGACY_CACHE_KEY).catch((error) => {
+      console.warn("[剧透弹幕AI过滤器] 旧视频缓存清理失败", error);
     });
   }
-  await migrationPromise;
+  await legacyCleanupPromise;
 }
 
-async function readAnalysisCache(videoKey: string): Promise<AnalysisCacheReadPayload> {
-  await ensureLegacyCacheMigrated();
+async function analysisCacheStatus(): Promise<{ ok: true; hasCache: boolean }> {
+  const database = await openDatabase();
+  const transaction = database.transaction(CACHE_STORE_NAME, "readonly");
+  const [count] = await Promise.all([
+    requestResult(transaction.objectStore(CACHE_STORE_NAME).count("latest")),
+    transactionComplete(transaction),
+  ]);
+  return { ok: true, hasCache: count > 0 };
+}
+
+async function readAnalysisCache(): Promise<AnalysisCacheReadPayload> {
+  const database = await openDatabase();
+  const transaction = database.transaction(CACHE_STORE_NAME, "readonly");
+  const completion = transactionComplete(transaction);
+  const [record] = await Promise.all([
+    requestResult(transaction.objectStore(CACHE_STORE_NAME).get("latest")),
+    completion,
+  ]);
+  return { ok: true, record: validVideoRecord(record) ? record : null };
+}
+
+async function writeAnalysisCache(record: VideoAnalysisRecord): Promise<{ ok: true }> {
+  if (!validVideoRecord(record)) throw new Error("视频分析结果无效");
   const database = await openDatabase();
   const transaction = database.transaction(CACHE_STORE_NAME, "readwrite");
+  const completion = transactionComplete(transaction);
   const store = transaction.objectStore(CACHE_STORE_NAME);
-  const record = await requestResult(
-    store.get(videoKey) as IDBRequest<VideoAnalysisRecord | undefined>,
-  );
-  if (record) {
-    record.lastAccessed = Date.now();
-    store.put(record);
-  }
-  await transactionComplete(transaction);
-  return {
-    ok: true,
-    found: !!record,
-    entries: record?.entries ?? {},
+  // 同一个键原子覆盖，永远只有一个视频；较早完成的跨标签页写入不能覆盖较新的结果。
+  const previous = store.get("latest");
+  previous.onsuccess = () => {
+    if (!validVideoRecord(previous.result) || previous.result.completedAt <= record.completedAt) {
+      store.put(record, "latest");
+    }
   };
-}
-
-async function writeAnalysisCache(
-  videoKey: string,
-  entries: VideoAnalysisEntries,
-  maxVideos: number,
-): Promise<{ ok: true }> {
-  await ensureLegacyCacheMigrated();
-  const database = await openDatabase();
-  const transaction = database.transaction(CACHE_STORE_NAME, "readwrite");
-  const store = transaction.objectStore(CACHE_STORE_NAME);
-  store.put({ videoKey, entries, lastAccessed: Date.now() } satisfies VideoAnalysisRecord);
-
-  const records = await requestResult(
-    store.getAll() as IDBRequest<VideoAnalysisRecord[]>,
-  );
-  const limit = Math.max(1, Math.floor(maxVideos) || 3);
-  records
-    .sort((a, b) => b.lastAccessed - a.lastAccessed)
-    .slice(limit)
-    .forEach((record) => store.delete(record.videoKey));
-  await transactionComplete(transaction);
+  await completion;
   return { ok: true };
 }
 
 async function clearAnalysisCache(): Promise<AnalysisCacheClearPayload> {
-  await ensureLegacyCacheMigrated();
   const database = await openDatabase();
   const transaction = database.transaction(CACHE_STORE_NAME, "readwrite");
+  const completion = transactionComplete(transaction);
   const store = transaction.objectStore(CACHE_STORE_NAME);
-  const count = await requestResult(store.count());
-  store.clear();
-  await transactionComplete(transaction);
+  const request = store.count();
+  const countResult = new Promise<number>((resolve, reject) => {
+    request.onsuccess = () => { store.clear(); resolve(request.result); };
+    request.onerror = () => reject(request.error);
+  });
+  const [count] = await Promise.all([countResult, completion]);
   return { ok: true, count };
 }
+
+// 扩展升级后立即建立新缓存结构并清理旧视频缓存，不等待第一次分析请求。
+void ensureLegacyCacheCleaned();
+void openDatabase().catch((error) => {
+  console.warn("[剧透弹幕AI过滤器] 视频缓存初始化失败", error);
+});
 
 function errorPayload(error: unknown): ErrorPayload {
   const value = error as { name?: string; message?: string } | null;
@@ -322,19 +295,24 @@ chrome.runtime.onMessage.addListener((message: ExtensionRequest, sender, sendRes
     return true;
   }
 
-  if (message.type === "analysis-cache-read") {
-    void readAnalysisCache(message.videoKey).catch(errorPayload).then(sendResponse);
+  if (message.type === "video-analysis-cache-status") {
+    void analysisCacheStatus().catch(errorPayload).then(sendResponse);
     return true;
   }
 
-  if (message.type === "analysis-cache-write") {
-    void writeAnalysisCache(message.videoKey, message.entries, message.maxVideos)
+  if (message.type === "video-analysis-cache-read") {
+    void readAnalysisCache().catch(errorPayload).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "video-analysis-cache-write") {
+    void writeAnalysisCache(message.record)
       .catch(errorPayload)
       .then(sendResponse);
     return true;
   }
 
-  if (message.type === "analysis-cache-clear") {
+  if (message.type === "video-analysis-cache-clear") {
     void clearAnalysisCache().catch(errorPayload).then(sendResponse);
     return true;
   }

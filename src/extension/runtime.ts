@@ -78,6 +78,7 @@ const httpAdapter = {
         status: payload.status,
         statusText: payload.statusText,
         ok: payload.status >= 200 && payload.status < 300,
+        headers: payload.headers,
         async text() {
           return payload.body;
         },

@@ -18,8 +18,7 @@
   "host_permissions": [
     "https://www.bilibili.com/*",
     "https://api.bilibili.com/*",
-    "https://*/*",
-    "http://*/*"
+    "https://openrouter.ai/*"
   ],
   "background": {
     "service_worker": "background.js"
