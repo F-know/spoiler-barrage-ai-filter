@@ -158,7 +158,7 @@ async function handleTestApi() {
     <div class="setting-group">
       <div class="setting-group-title-wrap"><span class="setting-group-title">API</span></div>
       <label class="setting-label" for="jev-api-key">Jev API Key</label>
-      <input id="jev-api-key" v-model="keyInput" type="password" class="key-input" placeholder="" autocomplete="off" spellcheck="false" @change="onApiChange" />
+      <input id="jev-api-key" v-model="keyInput" type="text" class="key-input api-key-input" placeholder="" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" @change="onApiChange" />
       <div class="setting-row api-timeout-row">
         <label class="setting-label">请求超时时间（秒）</label>
         <input
@@ -317,6 +317,7 @@ async function handleTestApi() {
   margin-bottom: 12px;
 }
 .key-input:focus { outline: none; border-color: #1a1a1a; }
+.api-key-input { -webkit-text-security: disc; }
 .setting-row {
   display: flex;
   align-items: center;

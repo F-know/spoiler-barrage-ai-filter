@@ -4,7 +4,7 @@ import { store, type SpoilState, seekTo, hidePanelHost } from "../src/services/s
 import { runOnce, reset, stop } from "../src/services/engine";
 import { sortDanmaku, type DanmakuSort } from "../src/services/probability";
 import SettingsPanel from "./SettingsPanel.vue";
-import { detailWindow, shouldFollowLogs } from "../src/services/panel-view";
+import { rowAtOffset, variableDetailWindow, shouldFollowLogs } from "../src/services/panel-view";
 import ProbabilityPanel from "./ProbabilityPanel.vue";
 
 const state = shallowRef<SpoilState>({ ...store.get() });
@@ -213,30 +213,66 @@ const detailItems = shallowRef(store.get().analysisItems);
 watch(() => state.value.analysisItems, items => { detailItems.value = items; });
 const sortedDanmaku = computed(() => currentView.value === "detail"
   ? sortDanmaku(detailItems.value, detailSort.value) : []);
-const DETAIL_ROW_HEIGHT = 76;
-const detailScrollTop = ref(0);
-const detailViewportHeight = computed(() => Math.max(76, (detailBodyHeight.value ?? 438) - 40));
-const detailRange = computed(() => detailWindow(sortedDanmaku.value.length,
-  detailScrollTop.value, detailViewportHeight.value, DETAIL_ROW_HEIGHT));
-const detailStart = computed(() => detailRange.value.start);
-const detailEnd = computed(() => detailRange.value.end);
-const visibleDanmaku = computed(() => sortedDanmaku.value.slice(detailStart.value, detailEnd.value));
-watch([detailSort, currentView, detailItems], () => {
-  detailScrollTop.value = 0;
-  if (detailListRef.value) detailListRef.value.scrollTop = 0;
+// 未显示过的条目先估算高度；显示后测量实际高度，离屏仍会卸载。
+const detailHeights = new Map<number, number>();
+const heightRevision = ref(0);
+const detailOffsets = computed(() => {
+  void heightRevision.value;
+  const offsets = [0];
+  for (let i = 0; i < sortedDanmaku.value.length; i++) {
+    offsets.push(offsets[i] + (detailHeights.get(i) ?? 54));
+  }
+  return offsets;
 });
-function onDetailScroll(event: Event) {
-  detailScrollTop.value = (event.target as HTMLElement).scrollTop;
-}
-
-/** 详情视图列表区高度:撑满 shell(与主视图同高),消除下方留白。
-    shell 是 content-box,min-height=mainHeight 只约束内容区；
-    content 内含 sub-view-head(26) + 其 margin-bottom(12) + 列表体，
-    因此列表体高度 = mainHeight - (26+12)。 */
+const detailScrollTop = ref(0);
+/** 子视图高度须先初始化：下面的 watch 注册时就会读取可见列表。 */
 const detailBodyHeight = computed(() => {
   if (!mainHeight.value) return undefined;
   return Math.max(0, mainHeight.value - (26 + 12));
 });
+const detailViewportHeight = computed(() => Math.max(76, (detailBodyHeight.value ?? 438) - 40));
+const detailRange = computed(() => variableDetailWindow(detailOffsets.value,
+  detailScrollTop.value, detailViewportHeight.value));
+const detailStart = computed(() => detailRange.value.start);
+const detailEnd = computed(() => detailRange.value.end);
+const visibleDanmaku = computed(() => sortedDanmaku.value.slice(detailStart.value, detailEnd.value));
+watch([detailSort, currentView, detailItems], () => {
+  detailHeights.clear();
+  heightRevision.value++;
+  detailScrollTop.value = 0;
+  if (detailListRef.value) detailListRef.value.scrollTop = 0;
+});
+let detailObserver: ResizeObserver | null = null;
+watch([visibleDanmaku, detailListRef], () => {
+  detailObserver?.disconnect();
+  const list = detailListRef.value;
+  if (!list) return;
+  detailObserver = new ResizeObserver(entries => {
+    const offsets = detailOffsets.value;
+    const anchor = rowAtOffset(offsets, list.scrollTop);
+    const withinRow = list.scrollTop - offsets[anchor];
+    let changed = false;
+    for (const entry of entries) {
+      const element = entry.target as HTMLElement;
+      const index = Number(element.dataset.index);
+      const height = element.getBoundingClientRect().height + 6;
+      if (height > 6 && detailHeights.get(index) !== height) {
+        detailHeights.set(index, height);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    heightRevision.value++;
+    const corrected = detailOffsets.value[anchor] + withinRow;
+    detailScrollTop.value = corrected;
+    nextTick(() => { if (detailListRef.value === list) list.scrollTop = corrected; });
+  });
+  list.querySelectorAll('.detail-item').forEach(row => detailObserver!.observe(row));
+}, { flush: 'post' });
+onBeforeUnmount(() => detailObserver?.disconnect());
+function onDetailScroll(event: Event) {
+  detailScrollTop.value = (event.target as HTMLElement).scrollTop;
+}
 
 /** 点击定位按钮:让视频跳转到对应时间 */
 async function handleSeek(sec: number) {
@@ -431,8 +467,8 @@ function handleStop() {
       </div>
       <div ref="detailListRef" class="detail-view-body" :style="{ height: detailViewportHeight + 'px' }" @scroll.passive="onDetailScroll">
         <template v-if="visibleDanmaku.length">
-          <div class="detail-list" :style="{ paddingTop: detailStart * DETAIL_ROW_HEIGHT + 'px', paddingBottom: (sortedDanmaku.length - detailEnd) * DETAIL_ROW_HEIGHT + 'px' }">
-            <div v-for="(item, i) in visibleDanmaku" :key="detailStart + i" class="detail-item">
+          <div class="detail-list" :style="{ paddingTop: detailOffsets[detailStart] + 'px', paddingBottom: (detailOffsets[sortedDanmaku.length] - detailOffsets[detailEnd]) + 'px' }">
+            <div v-for="(item, i) in visibleDanmaku" :key="detailStart + i" :data-index="detailStart + i" class="detail-item">
               <span class="detail-item-time">{{ fmtTime(item.time) }}</span>
               <div class="detail-item-content">
                 <span class="detail-item-text" :title="item.text">{{ item.text }}</span>
@@ -780,11 +816,9 @@ function handleStop() {
 .detail-item-probability { font-size: 10px; color: #8a919f; font-variant-numeric: tabular-nums; }
 .detail-list { display: flex; flex-direction: column; }
 .detail-item {
-  height: 70px;
   margin-bottom: 6px;
   box-sizing: border-box;
   flex-shrink: 0;
-  overflow: hidden;
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -801,7 +835,7 @@ function handleStop() {
   color: #b71c1c;
   font-weight: 600;
 }
-.detail-item-text { color: #1a1a1a; word-break: break-all; line-height: 18px; height: 36px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.detail-item-text { color: #1a1a1a; word-break: break-all; white-space: pre-wrap; line-height: 18px; }
 .detail-empty { color: #8a919f; font-size: 12px; margin: 0; }
 .detail-loading-hint {
   color: #8a919f;
