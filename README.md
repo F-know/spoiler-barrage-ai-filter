@@ -7,7 +7,7 @@
 
 ## 安装
 
-1. 前往 [Releases](https://github.com/F-know/spoiler-barrage-ai-filter/releases)，下载扩展 ZIP 包，并查看对应版本的说明。，不要选择 GitHub 自动生成的源码压缩包。
+1. 点击[下载最新版扩展 ZIP](https://github.com/F-know/spoiler-barrage-ai-filter/releases/latest/download/spoiler-barrage-ai-filter.zip)。不要选择 GitHub 自动生成的源码压缩包。
 2. 将 ZIP 解压到固定目录。
 3. 打开扩展管理页：Chrome 使用 `chrome://extensions/`，Edge 使用 `edge://extensions/`。
 4. 开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后包含 `manifest.json` 的目录。
@@ -43,7 +43,7 @@ npm run build
 
 ```sh
 npm run typecheck  # 类型检查
-npm test          # 自动化测试，不调用付费 API
+npm test          # 自动化测试
 ```
 
 Windows 下可运行 `npm run package:extension` 生成发布 ZIP 包，输出位于 `release` 目录。

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "剧透弹幕AI过滤器",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "分析 B 站视频弹幕，用 AI 识别并屏蔽存在剧透风险的弹幕。",
   "icons": {
     "16": "icons/icon-16.png",

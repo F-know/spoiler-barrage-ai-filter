@@ -7,7 +7,7 @@ import { testApi } from '../src/services/classify.ts';
 import { getVideoCachePolicy, VIDEO_CACHE_POLICY } from '../src/extension/video-cache.ts';
 
 const connections = [
-  { baseUrl: 'https://api.typesafe.ai/v1/systemone', model: 'jev-1.13.0' },
+  { baseUrl: 'https://api.typesafe.ai/v1/systemone', model: 'jev-latest' },
   { baseUrl: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-1.13' },
   { baseUrl: 'https://proxy.example:8443/custom/evaluate', model: 'private-alias' },
   { baseUrl: 'http://localhost:8080/custom/eval?version=2', model: 'local-model' },
@@ -25,7 +25,10 @@ test('arbitrary hosts, ports, models and complete URLs do not depend on provider
     assert.throws(() => resolveJevApi({ baseUrl }), /Base URL/);
   }
   assert.throws(() => resolveJevApi({ baseUrl: 'https://test.example', model: '' }), /model/);
-  assert.throws(() => resolveJevApi(), /Base URL/);
+  assert.deepEqual(resolveJevApi(), {
+    endpoint: 'https://api.typesafe.ai/v1/systemone',
+    model: 'jev-latest',
+  });
 });
 
 test('analysis and connection tests use the same custom endpoint, model and credentials', async () => {
@@ -68,8 +71,8 @@ test('custom auth headers, prefixes, no-auth endpoints and extra headers', () =>
 });
 
 test('cache identity includes actual endpoint and model, never credentials', () => {
-  assert.equal(getVideoCachePolicy(undefined, connections[1]), VIDEO_CACHE_POLICY);
-  assert.notEqual(getVideoCachePolicy(undefined, connections[0]), VIDEO_CACHE_POLICY);
+  assert.equal(getVideoCachePolicy(undefined, connections[0]), VIDEO_CACHE_POLICY);
+  assert.notEqual(getVideoCachePolicy(undefined, connections[1]), VIDEO_CACHE_POLICY);
   assert.notEqual(getVideoCachePolicy(undefined, connections[2]),
     getVideoCachePolicy(undefined, { ...connections[2], model: 'different-model' }));
   assert.equal(getVideoCachePolicy(undefined, connections[0]), getVideoCachePolicy(undefined, {

@@ -13,13 +13,15 @@ test('Jev defaults and configuration limits', () => {
   assert.equal(defaults.hideThreshold, 0.7);
   assert.equal(defaults.batchSize, 1000);
   assert.equal(defaults.concurrency, 10);
-  assert.equal(defaults.requestTimeoutSeconds, null);
-  for (const key of ['baseUrl', 'model', 'authHeader', 'authPrefix', 'extraHeaders']) assert.equal(defaults[key], '');
+  assert.equal(defaults.baseUrl, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(defaults.model, 'jev-latest');
+  assert.equal(defaults.requestTimeoutSeconds, 60);
+  for (const key of ['authHeader', 'authPrefix', 'extraHeaders']) assert.equal(defaults[key], '');
   assert.equal(normalizeBatchSize(5000), 1000);
   assert.equal(normalizeConcurrency(1000), 16);
   assert.equal(normalizeHideThreshold(''), 0.7);
   assert.equal(normalizeHideThreshold(2), 1);
-  assert.equal(normalizeRequestTimeoutSeconds(0), 120);
+  assert.equal(normalizeRequestTimeoutSeconds(0), 60);
   assert.equal(normalizeRequestTimeoutSeconds(900), 600);
 });
 
@@ -51,11 +53,12 @@ test('new config does not reuse old provider keys; persists settings and keeps t
   for (const [key, value] of Object.entries(config)) assert.equal(store.get()[key], value);
 });
 
-test('missing API settings stay blank and saved keys are preserved', async () => {
+test('missing API settings use defaults and saved keys are preserved', async () => {
   globalThis.LFStore = { get: async () => ({ apiKey: 'existing-key' }) };
   await store.loadApiConfig();
-  assert.equal(store.get().baseUrl, '');
-  assert.equal(store.get().model, '');
+  assert.equal(store.get().baseUrl, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(store.get().model, 'jev-latest');
+  assert.equal(store.get().requestTimeoutSeconds, 60);
   assert.equal(store.get().apiKey, 'existing-key');
 });
 
@@ -67,12 +70,14 @@ test('saved separate paths migrate to a full URL without a provider-specific gue
   assert.deepEqual(normalizeConnection(migrated), migrated);
 });
 
-test('saving unrelated settings does not populate blank API fields', async () => {
+test('saving unrelated settings uses API defaults without populating advanced fields', async () => {
   let saved;
   globalThis.LFStore = { set: async (_key, value) => { saved = value; }, get: async () => saved };
   store.patch({ ...normalizeConnection(), apiKey: '', requestTimeoutSeconds: null });
   await store.saveApiConfig(store.get());
   await store.loadApiConfig();
-  for (const key of ['baseUrl', 'model', 'authHeader', 'authPrefix', 'extraHeaders', 'apiKey']) assert.equal(store.get()[key], '');
+  assert.equal(store.get().baseUrl, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(store.get().model, 'jev-latest');
+  for (const key of ['authHeader', 'authPrefix', 'extraHeaders', 'apiKey']) assert.equal(store.get()[key], '');
   assert.equal(store.get().requestTimeoutSeconds, null);
 });

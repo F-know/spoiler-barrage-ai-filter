@@ -21,7 +21,7 @@ const encodeSegment = text => {
 beforeEach(() => {
   stop(false);
   store.resetForUrlChange();
-  store.patch({ ...normalizeConnection(), baseUrl: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-1.13', cid: 11, apiKey: 'test-key', mode: 'manual', hideThreshold: 0.7, systemPrompt: DEFAULT_SYSTEM_PROMPT });
+  store.patch({ ...normalizeConnection(), cid: 11, apiKey: 'test-key', mode: 'manual', hideThreshold: 0.7, systemPrompt: DEFAULT_SYSTEM_PROMPT });
   record = { url: baseUrl, cid: 11, policy: VIDEO_CACHE_POLICY, completedAt: 1, items: cachedItems };
   calls = apiCalls = writes = 0;
   globalThis.location = { href: baseUrl + '?spm_id_from=refresh#top' };

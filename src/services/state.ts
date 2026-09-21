@@ -5,7 +5,7 @@ import { segUrl, fetchViewDanmakuCount, formatCount } from "./bilibili";
 import { DEFAULT_SYSTEM_PROMPT, normalizeSystemPrompt } from "./prompts";
 import type { ScoredDanmaku } from "./probability";
 import {
-  DEFAULT_BATCH_SIZE, DEFAULT_CONCURRENCY, DEFAULT_HIDE_THRESHOLD,
+  DEFAULT_BATCH_SIZE, DEFAULT_CONCURRENCY, DEFAULT_HIDE_THRESHOLD, DEFAULT_REQUEST_TIMEOUT_SECONDS,
   normalizeConnection, type ApiConnection,
   normalizeBatchSize, normalizeConcurrency, normalizeHideThreshold,
   optionalRequestTimeout,
@@ -99,7 +99,7 @@ function defaultState(): SpoilState {
     apiKey: "",
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     hideThreshold: DEFAULT_HIDE_THRESHOLD,
-    requestTimeoutSeconds: null,
+    requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
     batchSize: DEFAULT_BATCH_SIZE,
     concurrency: DEFAULT_CONCURRENCY,
     replaceText: "<已屏蔽>",
@@ -273,7 +273,9 @@ class StateStore {
           ...normalizeConnection(v),
           systemPrompt: normalizeSystemPrompt(v.systemPrompt),
           hideThreshold: normalizeHideThreshold(v.hideThreshold),
-          requestTimeoutSeconds: optionalRequestTimeout(v.requestTimeoutSeconds),
+          requestTimeoutSeconds: v.requestTimeoutSeconds === undefined
+            ? DEFAULT_REQUEST_TIMEOUT_SECONDS
+            : optionalRequestTimeout(v.requestTimeoutSeconds),
           batchSize: normalizeBatchSize(v.batchSize),
           concurrency: normalizeConcurrency(v.concurrency),
           replaceText: v.replaceText ?? "<已屏蔽>",

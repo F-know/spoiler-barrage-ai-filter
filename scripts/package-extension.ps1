@@ -22,7 +22,7 @@ try {
   Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination (Join-Path $distPath "LICENSE") -Force
 
   New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
-  $archivePath = Join-Path $releasePath "spoiler-barrage-ai-filter-v$version.zip"
+  $archivePath = Join-Path $releasePath "spoiler-barrage-ai-filter.zip"
   if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force
   }

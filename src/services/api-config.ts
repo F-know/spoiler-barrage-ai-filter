@@ -1,8 +1,8 @@
 /** Jev Decisions 专用配置，不接受聊天模型的生成参数。 */
-export const JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-export const DEFAULT_BASE_URL = "";
-export const JEV_MODEL = "typesafe/jev-1.13";
-export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 120;
+export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+export const DEFAULT_BASE_URL = JEV_ENDPOINT;
+export const JEV_MODEL = "jev-latest";
+export const DEFAULT_REQUEST_TIMEOUT_SECONDS = 60;
 export const DEFAULT_BATCH_SIZE = 1000;
 export const MAX_BATCH_SIZE = 1000;
 export const DEFAULT_CONCURRENCY = 10;
@@ -27,7 +27,7 @@ export function normalizeConnection(config: ApiConnection = {}): Required<ApiCon
   }
   return {
     baseUrl,
-    model: typeof config.model === 'string' ? config.model.trim() : '',
+    model: typeof config.model === 'string' ? config.model.trim() : JEV_MODEL,
     authHeader: typeof config.authHeader === 'string' ? config.authHeader.trim() : '',
     authPrefix: typeof config.authPrefix === 'string' ? config.authPrefix.trim() : '',
     extraHeaders: typeof config.extraHeaders === 'string' ? config.extraHeaders : '',

@@ -48,7 +48,7 @@ onMounted(() => {
     // 日志、阈值或进度更新不覆盖尚未提交的提示词编辑。
     if (s.systemPrompt !== state.value.systemPrompt) systemPromptInput.value = s.systemPrompt;
     if (s.baseUrl !== state.value.baseUrl) baseUrlInput.value = s.baseUrl;
-    for (const key of ['model', 'authHeader', 'authPrefix', 'extraHeaders'] as const) {
+    for (const key of ['model'] as const) {
       if (s[key] !== state.value[key]) connectionInput.value[key] = s[key];
     }
     state.value = { ...s };
@@ -176,15 +176,6 @@ async function handleTestApi() {
       <input id="jev-model" v-model="connectionInput.model" class="key-input" placeholder="" autocomplete="off" spellcheck="false" @change="onApiChange" />
       <label class="setting-label" for="jev-api-key">API Key</label>
       <input id="jev-api-key" v-model="keyInput" type="text" class="key-input api-key-input" placeholder="" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" @change="onApiChange" />
-      <details class="api-advanced">
-        <summary>高级请求设置</summary>
-        <label class="setting-label" for="jev-auth-header">认证请求头</label>
-        <input id="jev-auth-header" v-model="connectionInput.authHeader" class="key-input" placeholder="" autocomplete="off" spellcheck="false" @change="onApiChange" />
-        <label class="setting-label" for="jev-auth-prefix">认证前缀</label>
-        <input id="jev-auth-prefix" v-model="connectionInput.authPrefix" class="key-input" placeholder="留空则直接发送 API Key" autocomplete="off" spellcheck="false" @change="onApiChange" />
-        <label class="setting-label" for="jev-extra-headers">额外请求头（JSON）</label>
-        <textarea id="jev-extra-headers" v-model="connectionInput.extraHeaders" class="key-input" rows="3" autocomplete="off" spellcheck="false" @change="onApiChange"></textarea>
-      </details>
       <div class="setting-row api-timeout-row">
         <label class="setting-label">请求超时时间（秒）</label>
         <input
@@ -343,8 +334,6 @@ async function handleTestApi() {
   margin-bottom: 12px;
 }
 .key-input:focus { outline: none; border-color: #1a1a1a; }
-.api-advanced { margin-bottom: 12px; }
-.api-advanced summary { cursor: pointer; color: #5b6472; font-size: 12px; margin-bottom: 10px; }
 .api-key-input { -webkit-text-security: disc; }
 .setting-row {
   display: flex;
