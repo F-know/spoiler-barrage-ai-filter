@@ -3,7 +3,8 @@ import { ref, onMounted, onBeforeUnmount } from "vue";
 import { store, type SpoilState } from "../src/services/state";
 import { testApi, type ApiTestResult } from "../src/services/classify";
 import {
-  MAX_BATCH_SIZE, MAX_CONCURRENCY, normalizeRequestTimeoutSeconds,
+  MAX_BATCH_SIZE, MAX_CONCURRENCY, optionalRequestTimeout,
+  normalizeBaseUrl, normalizeConnection,
   normalizeBatchSize, normalizeConcurrency,
 } from "../src/services/api-config";
 
@@ -15,6 +16,8 @@ let unsub: (() => void) | null = null;
 
 // API 板块
 const keyInput = ref(state.value.apiKey);
+const baseUrlInput = ref(state.value.baseUrl);
+const connectionInput = ref(normalizeConnection(state.value));
 const systemPromptInput = ref(state.value.systemPrompt);
 const requestTimeoutSecondsInput = ref(state.value.requestTimeoutSeconds);
 // 功能板块
@@ -44,6 +47,10 @@ onMounted(() => {
   unsub = store.subscribe((s) => {
     // 日志、阈值或进度更新不覆盖尚未提交的提示词编辑。
     if (s.systemPrompt !== state.value.systemPrompt) systemPromptInput.value = s.systemPrompt;
+    if (s.baseUrl !== state.value.baseUrl) baseUrlInput.value = s.baseUrl;
+    for (const key of ['model', 'authHeader', 'authPrefix', 'extraHeaders'] as const) {
+      if (s[key] !== state.value[key]) connectionInput.value[key] = s[key];
+    }
     state.value = { ...s };
     keyInput.value = s.apiKey;
     requestTimeoutSecondsInput.value = s.requestTimeoutSeconds;
@@ -62,9 +69,11 @@ onBeforeUnmount(() => {
 /** 把当前所有设置写回 store 并持久化(及时生效,无保存按钮) */
 function persist() {
   const cfg = {
+    ...normalizeConnection(connectionInput.value),
     apiKey: keyInput.value.trim(),
+    baseUrl: normalizeBaseUrl(baseUrlInput.value),
     systemPrompt: normalizeSystemPrompt(systemPromptInput.value),
-    requestTimeoutSeconds: normalizeRequestTimeoutSeconds(requestTimeoutSecondsInput.value),
+    requestTimeoutSeconds: optionalRequestTimeout(requestTimeoutSecondsInput.value),
     hideThreshold: store.get().hideThreshold,
     batchSize: normalizeBatchSize(batchSizeInput.value),
     concurrency: normalizeConcurrency(concurrencyInput.value),
@@ -72,6 +81,8 @@ function persist() {
   };
   store.patch(cfg);
   systemPromptInput.value = cfg.systemPrompt;
+  baseUrlInput.value = cfg.baseUrl;
+  connectionInput.value = normalizeConnection(cfg);
   void store.saveApiConfig(cfg);
 }
 
@@ -129,10 +140,12 @@ async function handleTestApi() {
   testCode.value = "";
   testMsg.value = "";
   const cfg = {
+    ...normalizeConnection(connectionInput.value),
     apiKey: keyInput.value.trim(),
+    baseUrl: normalizeBaseUrl(baseUrlInput.value),
     systemPrompt: normalizeSystemPrompt(systemPromptInput.value),
     hideThreshold: store.get().hideThreshold,
-    requestTimeoutSeconds: normalizeRequestTimeoutSeconds(requestTimeoutSecondsInput.value),
+    requestTimeoutSeconds: optionalRequestTimeout(requestTimeoutSecondsInput.value),
   };
   try {
     const r: ApiTestResult = await testApi(cfg);
@@ -157,8 +170,21 @@ async function handleTestApi() {
     <!-- API 板块 -->
     <div class="setting-group">
       <div class="setting-group-title-wrap"><span class="setting-group-title">API</span></div>
-      <label class="setting-label" for="jev-api-key">Jev API Key</label>
+      <label class="setting-label" for="jev-base-url">Base URL</label>
+      <input id="jev-base-url" v-model="baseUrlInput" type="url" class="key-input" placeholder="" autocomplete="off" autocapitalize="none" spellcheck="false" @change="onApiChange" />
+      <label class="setting-label" for="jev-model">model</label>
+      <input id="jev-model" v-model="connectionInput.model" class="key-input" placeholder="" autocomplete="off" spellcheck="false" @change="onApiChange" />
+      <label class="setting-label" for="jev-api-key">API Key</label>
       <input id="jev-api-key" v-model="keyInput" type="text" class="key-input api-key-input" placeholder="" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" @change="onApiChange" />
+      <details class="api-advanced">
+        <summary>高级请求设置</summary>
+        <label class="setting-label" for="jev-auth-header">认证请求头</label>
+        <input id="jev-auth-header" v-model="connectionInput.authHeader" class="key-input" placeholder="" autocomplete="off" spellcheck="false" @change="onApiChange" />
+        <label class="setting-label" for="jev-auth-prefix">认证前缀</label>
+        <input id="jev-auth-prefix" v-model="connectionInput.authPrefix" class="key-input" placeholder="留空则直接发送 API Key" autocomplete="off" spellcheck="false" @change="onApiChange" />
+        <label class="setting-label" for="jev-extra-headers">额外请求头（JSON）</label>
+        <textarea id="jev-extra-headers" v-model="connectionInput.extraHeaders" class="key-input" rows="3" autocomplete="off" spellcheck="false" @change="onApiChange"></textarea>
+      </details>
       <div class="setting-row api-timeout-row">
         <label class="setting-label">请求超时时间（秒）</label>
         <input
@@ -317,6 +343,8 @@ async function handleTestApi() {
   margin-bottom: 12px;
 }
 .key-input:focus { outline: none; border-color: #1a1a1a; }
+.api-advanced { margin-bottom: 12px; }
+.api-advanced summary { cursor: pointer; color: #5b6472; font-size: 12px; margin-bottom: 10px; }
 .api-key-input { -webkit-text-security: disc; }
 .setting-row {
   display: flex;

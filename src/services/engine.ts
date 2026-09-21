@@ -3,6 +3,7 @@ import { classifyTexts } from "./classify";
 import { fetchSegment } from "./bilibili";
 import { store, controlPlayback, readEpisodeInfo } from "./state";
 import { checkAbort } from "./jev";
+import { normalizeConnection, buildApiHeaders, resolveJevApi } from "./api-config";
 import { canonicalVideoUrl, videoNavigationKey, readVideoCache, writeVideoCache, getVideoCachePolicy } from "../extension/video-cache";
 import type { ScoredDanmaku } from "./probability";
 
@@ -23,10 +24,11 @@ export async function restoreLastVideo(): Promise<boolean> {
   if (!snapshot.cid || snapshot.phase !== "idle") return false;
   const cid = snapshot.cid, generation = currentRunId, url = location.href;
   const systemPrompt = snapshot.systemPrompt;
+  const connection = normalizeConnection(snapshot);
   try {
-    const cached = await readVideoCache(url, cid, systemPrompt);
+    const cached = await readVideoCache(url, cid, systemPrompt, connection);
     if (!cached || generation !== currentRunId || store.get().cid !== cid ||
-      store.get().phase !== "idle" || getVideoCachePolicy(store.get().systemPrompt) !== getVideoCachePolicy(systemPrompt) ||
+      store.get().phase !== "idle" || getVideoCachePolicy(store.get().systemPrompt, store.get()) !== getVideoCachePolicy(systemPrompt, connection) ||
       videoNavigationKey(location.href) !== videoNavigationKey(url)) return false;
     applyComplete(cached.items, cid);
     store.pushLog(`已复用上次视频分析，共 ${cached.items.length} 条弹幕`);
@@ -69,6 +71,8 @@ export async function analyzeEpisode(
   const url = location.href;
   // 整轮分析固定提示词，避免中途编辑造成不同批次混用或缓存错误归属。
   const systemPrompt = store.get().systemPrompt;
+  const apiConfig = { ...store.get() };
+  const connection = normalizeConnection(apiConfig);
   const mode = opts.mode ?? store.get().mode;
   const resume = opts.resumeOnDone ?? store.get().resumeOnDone;
   const active = () => runId === currentRunId && !abort.signal.aborted &&
@@ -89,7 +93,7 @@ export async function analyzeEpisode(
 
     if (!opts.force) {
       let cached = null;
-      try { cached = await readVideoCache(url, cid, systemPrompt); } catch { /* 缓存不可用不阻止新分析。 */ }
+      try { cached = await readVideoCache(url, cid, systemPrompt, connection); } catch { /* 缓存不可用不阻止新分析。 */ }
       guard();
       if (cached) {
         applyComplete(cached.items, cid);
@@ -97,7 +101,8 @@ export async function analyzeEpisode(
         return { ok: true };
       }
     }
-    if (!store.get().apiKey.trim()) throw new Error("请先填写 Jev API Key");
+    resolveJevApi(connection);
+    buildApiHeaders(apiConfig);
     if (mode === "auto") {
       await controlPlayback("pause");
       guard();
@@ -109,7 +114,7 @@ export async function analyzeEpisode(
     store.patch({ totalCount: source.items.length });
     store.pushLog(`开始分析弹幕概率：每批最多 ${settings.batchSize} 条，并发 ${settings.concurrency}`);
     const result = await classifyTexts(source.items, {
-      apiKey: settings.apiKey, hideThreshold: settings.hideThreshold,
+      apiKey: apiConfig.apiKey, ...connection, hideThreshold: settings.hideThreshold,
       requestTimeoutSeconds: settings.requestTimeoutSeconds,
       systemPrompt,
     }, {
@@ -138,7 +143,7 @@ export async function analyzeEpisode(
     if (source.complete) {
       try {
         await writeVideoCache({
-          url: canonicalVideoUrl(url), cid, policy: getVideoCachePolicy(systemPrompt),
+          url: canonicalVideoUrl(url), cid, policy: getVideoCachePolicy(systemPrompt, connection),
           completedAt: Date.now(), items: result.items,
         });
       } catch {

@@ -4,6 +4,7 @@ import { store } from '../src/services/state.ts';
 import { analyzeEpisode, restoreLastVideo, stop } from '../src/services/engine.ts';
 import { VIDEO_CACHE_POLICY, getVideoCachePolicy } from '../src/extension/video-cache.ts';
 import { DEFAULT_SYSTEM_PROMPT } from '../src/services/prompts.ts';
+import { normalizeConnection } from '../src/services/api-config.ts';
 
 const baseUrl = 'https://www.bilibili.com/video/BVtest';
 const cachedItems = [
@@ -20,7 +21,7 @@ const encodeSegment = text => {
 beforeEach(() => {
   stop(false);
   store.resetForUrlChange();
-  store.patch({ cid: 11, apiKey: 'test-key', mode: 'manual', hideThreshold: 0.7, systemPrompt: DEFAULT_SYSTEM_PROMPT });
+  store.patch({ ...normalizeConnection(), baseUrl: 'https://openrouter.ai/api/alpha/decisions', model: 'typesafe/jev-1.13', cid: 11, apiKey: 'test-key', mode: 'manual', hideThreshold: 0.7, systemPrompt: DEFAULT_SYSTEM_PROMPT });
   record = { url: baseUrl, cid: 11, policy: VIDEO_CACHE_POLICY, completedAt: 1, items: cachedItems };
   calls = apiCalls = writes = 0;
   globalThis.location = { href: baseUrl + '?spm_id_from=refresh#top' };
@@ -114,6 +115,26 @@ test('one analysis uses a prompt snapshot and tags its cache correctly even if s
   assert.equal((await analyzeEpisode()).ok, true);
   assert.equal(apiCalls, 1);
   assert.equal(record.policy, getVideoCachePolicy('规则 A'));
+  store.resetForUrlChange();
+  store.patch({ cid: 11 });
+  assert.equal(await restoreLastVideo(), false);
+});
+
+test('full engine supports custom no-auth services and keeps request/cache configuration consistent', async () => {
+  const connection = { baseUrl: 'http://localhost:8080/eval', model: 'custom-jev', authHeader: '', authPrefix: '', extraHeaders: '{"X-Tenant":"a"}' };
+  store.patch({ ...connection, apiKey: '' });
+  const send = globalThis.LFHttp.request;
+  globalThis.LFHttp.request = async (url, init) => {
+    assert.equal(url, connection.baseUrl);
+    assert.equal(JSON.parse(init.body).model, connection.model);
+    assert.equal(init.headers.authorization, undefined);
+    assert.equal(init.headers['x-tenant'], 'a');
+    store.patch({ model: 'changed-model' });
+    return send(url, init);
+  };
+  assert.equal((await analyzeEpisode()).ok, true);
+  assert.equal(apiCalls, 1);
+  assert.equal(record.policy, getVideoCachePolicy(DEFAULT_SYSTEM_PROMPT, connection));
   store.resetForUrlChange();
   store.patch({ cid: 11 });
   assert.equal(await restoreLastVideo(), false);

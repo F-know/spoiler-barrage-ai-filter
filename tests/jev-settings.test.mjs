@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { store } from '../src/services/state.ts';
 import { DEFAULT_SYSTEM_PROMPT } from '../src/services/prompts.ts';
 import {
-  normalizeBatchSize, normalizeConcurrency, normalizeHideThreshold, normalizeRequestTimeoutSeconds,
+  normalizeBatchSize, normalizeConcurrency, normalizeHideThreshold, normalizeRequestTimeoutSeconds, normalizeConnection,
 } from '../src/services/api-config.ts';
 
 test('Jev defaults and configuration limits', () => {
@@ -13,7 +13,8 @@ test('Jev defaults and configuration limits', () => {
   assert.equal(defaults.hideThreshold, 0.7);
   assert.equal(defaults.batchSize, 1000);
   assert.equal(defaults.concurrency, 10);
-  assert.equal(defaults.requestTimeoutSeconds, 120);
+  assert.equal(defaults.requestTimeoutSeconds, null);
+  for (const key of ['baseUrl', 'model', 'authHeader', 'authPrefix', 'extraHeaders']) assert.equal(defaults[key], '');
   assert.equal(normalizeBatchSize(5000), 1000);
   assert.equal(normalizeConcurrency(1000), 16);
   assert.equal(normalizeHideThreshold(''), 0.7);
@@ -31,6 +32,8 @@ test('new config does not reuse old provider keys; persists settings and keeps t
   assert.equal(await store.loadApiConfig(), null);
   assert.equal(store.get().apiKey, '');
   const config = {
+    baseUrl: 'https://api.typesafe.ai/v2/evaluate',
+    model: 'custom-model', authHeader: 'X-Key', authPrefix: '', extraHeaders: '{"X-Tenant":"test"}',
     apiKey: 'new-test-key', hideThreshold: 0.85, batchSize: 25,
     concurrency: 2, requestTimeoutSeconds: 90, replaceText: '', systemPrompt: '自定义剧透判断规则',
   };
@@ -43,4 +46,33 @@ test('new config does not reuse old provider keys; persists settings and keeps t
   assert.equal(memory.get('dmJevConfig_v1').apiKey, config.apiKey);
   assert.equal(memory.get('dmJevConfig_v1').systemPrompt, config.systemPrompt);
   assert.equal(memory.get('dmApiConfig_v1').apiKey, 'old-provider-key');
+  store.resetForEpisode(42, 1, 'video', '', '');
+  assert.equal(store.get().baseUrl, config.baseUrl);
+  for (const [key, value] of Object.entries(config)) assert.equal(store.get()[key], value);
+});
+
+test('missing API settings stay blank and saved keys are preserved', async () => {
+  globalThis.LFStore = { get: async () => ({ apiKey: 'existing-key' }) };
+  await store.loadApiConfig();
+  assert.equal(store.get().baseUrl, '');
+  assert.equal(store.get().model, '');
+  assert.equal(store.get().apiKey, 'existing-key');
+});
+
+test('saved separate paths migrate to a full URL without a provider-specific guess', () => {
+  const migrated = normalizeConnection({ baseUrl: 'https://custom.example/prefix', requestPath: '/v2/eval', model: 'own-model' });
+  assert.equal(migrated.baseUrl, 'https://custom.example/prefix/v2/eval');
+  assert.equal(migrated.model, 'own-model');
+  assert.equal(migrated.requestPath, undefined);
+  assert.deepEqual(normalizeConnection(migrated), migrated);
+});
+
+test('saving unrelated settings does not populate blank API fields', async () => {
+  let saved;
+  globalThis.LFStore = { set: async (_key, value) => { saved = value; }, get: async () => saved };
+  store.patch({ ...normalizeConnection(), apiKey: '', requestTimeoutSeconds: null });
+  await store.saveApiConfig(store.get());
+  await store.loadApiConfig();
+  for (const key of ['baseUrl', 'model', 'authHeader', 'authPrefix', 'extraHeaders', 'apiKey']) assert.equal(store.get()[key], '');
+  assert.equal(store.get().requestTimeoutSeconds, null);
 });

@@ -130,7 +130,7 @@ function updateThreshold(value: number) { store.setThreshold(value); }
 function saveThreshold() { void store.saveApiConfig(store.get()); }
 /** 配置 Key 后可发起新分析。 */
 const isApiReady = computed(
-  () => !!state.value.apiKey?.trim(),
+  () => !!state.value.baseUrl?.trim() && !!state.value.model?.trim() && (!state.value.authHeader || !!state.value.apiKey?.trim()),
 );
 
 // 弹幕总数数字滚动动效:随"拉取/分析过程中 totalCount 实时增长"而往上加。

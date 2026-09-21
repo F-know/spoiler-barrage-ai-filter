@@ -6,7 +6,7 @@ import {
 import { classifyTexts } from '../src/services/classify.ts';
 import { DEFAULT_SYSTEM_PROMPT, JEV_QUESTION, normalizeSystemPrompt } from '../src/services/prompts.ts';
 
-const config = { apiKey: 'test-key', hideThreshold: 0.7, requestTimeoutSeconds: 10 };
+const config = { baseUrl: 'https://test.example/evaluate', model: 'test-model', apiKey: 'test-key', hideThreshold: 0.7, requestTimeoutSeconds: 10 };
 const response = (probabilities, status = 200, headers = {}) => ({
   status, headers,
   text: async () => JSON.stringify({

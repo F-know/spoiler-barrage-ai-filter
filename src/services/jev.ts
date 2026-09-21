@@ -1,4 +1,4 @@
-import { JEV_ENDPOINT, JEV_MODEL, normalizeBatchSize, normalizeRequestTimeoutSeconds, type JevConfig } from "./api-config";
+import { JEV_MODEL, resolveJevApi, buildApiHeaders, normalizeBatchSize, normalizeRequestTimeoutSeconds, type JevConfig } from "./api-config";
 
 import { JEV_QUESTION, normalizeSystemPrompt } from "./prompts";
 
@@ -12,9 +12,9 @@ export type JevBatchResult = {
 };
 export type RetryInfo = { attempt: number; delayMs: number; status: number };
 
-export function buildDecisionRequest(texts: string[], systemPrompt?: string) {
+export function buildDecisionRequest(texts: string[], systemPrompt?: string, model = JEV_MODEL) {
   return {
-    model: JEV_MODEL,
+    model,
     state: normalizeSystemPrompt(systemPrompt),
     questions: Object.fromEntries(texts.map((text, index) => [
       `dm_${index}`,
@@ -48,7 +48,7 @@ export function createDecisionBatches(texts: string[], batchSize: number, system
 }
 
 /** 缺项/类型错误直接报错，不能把解析失败当作“所有弹幕都有剧透”。 */
-export function parseDecisionResponse(data: unknown, texts: string[]): Omit<JevBatchResult, "elapsedMs"> {
+export function parseDecisionResponse(data: unknown, texts: string[], fallbackModel = JEV_MODEL): Omit<JevBatchResult, "elapsedMs"> {
   const response = data as {
     answers?: Record<string, { type?: unknown; noul?: unknown }>;
     model?: unknown;
@@ -71,7 +71,7 @@ export function parseDecisionResponse(data: unknown, texts: string[]): Omit<JevB
   const cost = response?.usage?.cost;
   return {
     items,
-    model: typeof response?.model === "string" ? response.model : JEV_MODEL,
+    model: typeof response?.model === "string" ? response.model : fallbackModel,
     usage: {
       inputTokens: typeof input === "number" && Number.isFinite(input) && input >= 0 ? input : 0,
       cost: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null,
@@ -116,7 +116,7 @@ export function retryDelay(value: string | undefined, attempt: number, now = Dat
 export class JevHttpError extends Error {
   constructor(public status: number) {
     const hints: Record<number, string> = {
-      401: "OpenRouter API Key 无效", 402: "OpenRouter 余额不足", 403: "OpenRouter 拒绝访问，请检查账户权限",
+      401: "API Key 无效，请确认与接口地址匹配", 402: "账户余额不足", 403: "服务拒绝访问，请检查账户权限",
       404: "Jev 模型或 Decisions 接口不可用", 422: "Jev 请求参数未通过校验",
       413: "请求内容过大，请减小单次请求处理弹幕数量",
       429: "请求被限流，请降低并发数", 503: "Jev 服务暂时不可用", 529: "Jev 服务繁忙",
@@ -131,7 +131,8 @@ export async function requestDecisions(
   opts: { signal?: AbortSignal; onRetry?: (info: RetryInfo) => void } = {},
 ): Promise<JevBatchResult> {
   checkAbort(opts.signal);
-  if (!config.apiKey.trim()) throw new Error("请先填写 OpenRouter API Key");
+  const api = resolveJevApi(config);
+  const headers = buildApiHeaders(config);
   const timeoutSeconds = normalizeRequestTimeoutSeconds(config.requestTimeoutSeconds);
   const controller = new AbortController();
   const onAbort = () => controller.abort();
@@ -140,13 +141,15 @@ export async function requestDecisions(
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutSeconds * 1000);
   const started = performance.now();
   try {
-    const body = JSON.stringify(buildDecisionRequest(texts, config.systemPrompt));
+    const body = JSON.stringify(buildDecisionRequest(texts, config.systemPrompt, api.model));
     for (let attempt = 0; ; attempt++) {
       checkAbort(controller.signal);
-      const response = await abortable(LFHttp.request(JEV_ENDPOINT, {
+      const response = await abortable(LFHttp.request(api.endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey.trim()}` },
+        headers,
+        credentials: "omit",
         body,
+        redirect: "error",
         signal: controller.signal,
         throwOnHTTPError: false,
       }), controller.signal);
@@ -164,7 +167,7 @@ export async function requestDecisions(
       try { data = JSON.parse(await response.text()); }
       catch { throw new Error("Jev 返回了无效 JSON，本批未应用。"); }
       checkAbort(controller.signal);
-      return { ...parseDecisionResponse(data, texts), elapsedMs: Math.round(performance.now() - started) };
+      return { ...parseDecisionResponse(data, texts, api.model), elapsedMs: Math.round(performance.now() - started) };
     }
   } catch (error) {
     if (opts.signal?.aborted) throw abortError();

@@ -22,7 +22,7 @@ const batchSize = batchIndex >= 0 ? Number(args[batchIndex + 1]) : samples.lengt
 if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) throw new Error('batch-size 应为 1～100');
 const texts = Array.from({ length: batchSize }, (_, index) => samples[index % samples.length].text);
 try {
-  const result = await requestDecisions(texts, { apiKey, hideThreshold: DEFAULT_HIDE_THRESHOLD, requestTimeoutSeconds: 60 });
+  const result = await requestDecisions(texts, { baseUrl: process.env.JEV_BASE_URL, model: process.env.JEV_MODEL, apiKey, hideThreshold: DEFAULT_HIDE_THRESHOLD, requestTimeoutSeconds: 60 });
   const rows = result.items.map((item, i) => ({
     text: item.text, probability: item.probability, hide: item.probability >= DEFAULT_HIDE_THRESHOLD,
     expected: samples[i % samples.length].expected,

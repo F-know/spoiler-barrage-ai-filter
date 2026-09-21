@@ -6,8 +6,9 @@ import { DEFAULT_SYSTEM_PROMPT, normalizeSystemPrompt } from "./prompts";
 import type { ScoredDanmaku } from "./probability";
 import {
   DEFAULT_BATCH_SIZE, DEFAULT_CONCURRENCY, DEFAULT_HIDE_THRESHOLD,
-  normalizeBatchSize, normalizeConcurrency, normalizeHideThreshold, normalizeRequestTimeoutSeconds,
-  DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  normalizeConnection, type ApiConnection,
+  normalizeBatchSize, normalizeConcurrency, normalizeHideThreshold,
+  optionalRequestTimeout,
 } from "./api-config";
 
 /** Jev 配置单独保存，不继承旧模型的 Key、参数或高并发值。 */
@@ -16,11 +17,12 @@ const PANEL_VISIBLE_KEY = "panelVisible_v1";
 
 export type Mode = "auto" | "manual";
 
-type PersistedConfig = {
+type PersistedConfig = ApiConnection & {
+  baseUrl?: string;
   apiKey?: string;
   systemPrompt?: string;
   hideThreshold?: number;
-  requestTimeoutSeconds?: number;
+  requestTimeoutSeconds?: number | null;
   batchSize?: number;
   concurrency?: number;
   replaceText?: string;
@@ -39,7 +41,7 @@ export type FilteredDm = {
   time: number;
 };
 
-export type SpoilState = {
+export type SpoilState = Required<ApiConnection> & {
   mode: Mode;
   phase: Phase;
   cid: number | null;
@@ -55,10 +57,11 @@ export type SpoilState = {
   resumeOnDone: boolean;
   /** API Key */
   apiKey: string;
+  baseUrl: string;
   systemPrompt: string;
   hideThreshold: number;
   /** 正式分析与接口测试共用的单次请求超时时间（秒）。 */
-  requestTimeoutSeconds: number;
+  requestTimeoutSeconds: number | null;
   /** 单次请求处理的弹幕数量(默认 1000) */
   batchSize: number;
   /** 请求并发数(默认 10) */
@@ -92,10 +95,11 @@ function defaultState(): SpoilState {
     danmakuCount: "",
     analysisItems: [],
     resumeOnDone: true,
+    ...normalizeConnection(),
     apiKey: "",
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     hideThreshold: DEFAULT_HIDE_THRESHOLD,
-    requestTimeoutSeconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    requestTimeoutSeconds: null,
     batchSize: DEFAULT_BATCH_SIZE,
     concurrency: DEFAULT_CONCURRENCY,
     replaceText: "<已屏蔽>",
@@ -169,6 +173,7 @@ class StateStore {
       cover,
       danmakuCount,
       apiKey: this.state.apiKey,
+      ...normalizeConnection(this.state),
       systemPrompt: this.state.systemPrompt,
       hideThreshold: this.state.hideThreshold,
       requestTimeoutSeconds: this.state.requestTimeoutSeconds,
@@ -191,6 +196,7 @@ class StateStore {
     this.state = {
       ...defaultState(),
       apiKey: this.state.apiKey,
+      ...normalizeConnection(this.state),
       systemPrompt: this.state.systemPrompt,
       hideThreshold: this.state.hideThreshold,
       requestTimeoutSeconds: this.state.requestTimeoutSeconds,
@@ -206,11 +212,12 @@ class StateStore {
   }
 
   /** 持久化 Jev 配置和功能参数。 */
-  async saveApiConfig(cfg: {
+  async saveApiConfig(cfg: ApiConnection & {
+    baseUrl?: string;
     apiKey: string;
     systemPrompt?: string;
     hideThreshold: number;
-    requestTimeoutSeconds: number;
+    requestTimeoutSeconds: number | null;
     batchSize: number;
     concurrency: number;
     replaceText: string;
@@ -218,6 +225,7 @@ class StateStore {
     try {
       await LFStore.set(API_CFG_KEY, {
         apiKey: cfg.apiKey,
+        ...normalizeConnection({ ...this.state, ...cfg }),
         systemPrompt: normalizeSystemPrompt(cfg.systemPrompt ?? this.state.systemPrompt),
         hideThreshold: cfg.hideThreshold,
         requestTimeoutSeconds: cfg.requestTimeoutSeconds,
@@ -246,11 +254,12 @@ class StateStore {
   }
 
   /** 启动时加载已保存的接口配置，并覆盖内存中的默认值。 */
-  async loadApiConfig(): Promise<{
+  async loadApiConfig(): Promise<Required<ApiConnection> & {
+    baseUrl: string;
     apiKey: string;
     systemPrompt: string;
     hideThreshold: number;
-    requestTimeoutSeconds: number;
+    requestTimeoutSeconds: number | null;
     batchSize: number;
     concurrency: number;
     replaceText: string;
@@ -261,9 +270,10 @@ class StateStore {
       if (v && typeof v === "object") {
         const cfg = {
           apiKey: v.apiKey ?? "",
+          ...normalizeConnection(v),
           systemPrompt: normalizeSystemPrompt(v.systemPrompt),
           hideThreshold: normalizeHideThreshold(v.hideThreshold),
-          requestTimeoutSeconds: normalizeRequestTimeoutSeconds(v.requestTimeoutSeconds),
+          requestTimeoutSeconds: optionalRequestTimeout(v.requestTimeoutSeconds),
           batchSize: normalizeBatchSize(v.batchSize),
           concurrency: normalizeConcurrency(v.concurrency),
           replaceText: v.replaceText ?? "<已屏蔽>",
