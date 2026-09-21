@@ -1,24 +1,27 @@
 # 剧透弹幕AI过滤器
 
-一个运行在 Chrome / Edge 浏览器中的 B 站剧透弹幕过滤扩展，使用 **TypeSafe Jev** 分析弹幕的剧透风险，帮助减少观看时遇到的剧透。
+一个运行在 Chrome / Edge 浏览器（其它游览器未测试）中的 B 站剧透弹幕过滤扩展，使用 **TypeSafe Jev** 分析弹幕的剧透风险，帮助减少观看时遇到的剧透。
 
 > 考虑到速度和成本问题，AI 只分析弹幕文字，不会读取视频内容，所以可能出现误判。
 
+![插件面板](./assets/panel.png)
 
 ## 安装
 
 1. 点击[下载最新版扩展 ZIP](https://github.com/F-know/spoiler-barrage-ai-filter/releases/latest/download/spoiler-barrage-ai-filter.zip)。
 2. 将 ZIP 解压到固定目录。
-3. 打开扩展管理页：Chrome 使用 `chrome://extensions/`，Edge 使用 `edge://extensions/`。
+3. 打开扩展管理页：Chrome 在地址栏输入 `chrome://extensions/` 进入，Edge 在地址栏输入 `edge://extensions/` 进入。
 4. 开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后包含 `manifest.json` 的目录。
-5. 打开或刷新 B 站视频页。
+5. 打开或刷新 B 站视频页，若出现下方机器人图标则安装成功。
+
+![安装成功后的机器人图标](./assets/success.png)
 
 安装后请保留该目录。更新扩展文件后，在扩展管理页点击“重新加载”，并刷新 B 站页面。
 
 ## 使用方法
 
-1. 在 B 站视频页点击播放器弹幕设置按钮旁的机器人图标，打开插件面板。
-2. 进入设置，在“Jev API Key”中填写 API Key。
+1. 点击机器人图标，打开插件面板。
+2. 进入设置，在 API 中填写 Base URL 、 Model 和 API Key ，支持 Jev 官方 API 或 OpenRouter 等中转站。
 3. 点击“测试”确认连接正常，再返回主面板点击“开始分析”。测试和分析均会调用第三方 API，费用由服务商收取。
 4. 分析完成后，根据观看需要调整屏蔽阈值。开启“自动”后，刷新或切换视频时会自动处理。
 

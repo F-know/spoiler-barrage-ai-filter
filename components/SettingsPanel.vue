@@ -172,7 +172,7 @@ async function handleTestApi() {
       <div class="setting-group-title-wrap"><span class="setting-group-title">API</span></div>
       <label class="setting-label" for="jev-base-url">Base URL</label>
       <input id="jev-base-url" v-model="baseUrlInput" type="url" class="key-input" placeholder="" autocomplete="off" autocapitalize="none" spellcheck="false" @change="onApiChange" />
-      <label class="setting-label" for="jev-model">model</label>
+      <label class="setting-label" for="jev-model">Model</label>
       <input id="jev-model" v-model="connectionInput.model" class="key-input" placeholder="" autocomplete="off" spellcheck="false" @change="onApiChange" />
       <label class="setting-label" for="jev-api-key">API Key</label>
       <input id="jev-api-key" v-model="keyInput" type="text" class="key-input api-key-input" placeholder="" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" @change="onApiChange" />
