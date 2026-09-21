@@ -7,7 +7,7 @@
 
 ## 安装
 
-1. 点击[下载最新版扩展 ZIP](https://github.com/F-know/spoiler-barrage-ai-filter/releases/latest/download/spoiler-barrage-ai-filter.zip)。不要选择 GitHub 自动生成的源码压缩包。
+1. 点击[下载最新版扩展 ZIP](https://github.com/F-know/spoiler-barrage-ai-filter/releases/latest/download/spoiler-barrage-ai-filter.zip)。
 2. 将 ZIP 解压到固定目录。
 3. 打开扩展管理页：Chrome 使用 `chrome://extensions/`，Edge 使用 `edge://extensions/`。
 4. 开启“开发者模式”，点击“加载已解压的扩展程序”，选择解压后包含 `manifest.json` 的目录。
